@@ -167,16 +167,17 @@ enum StatusVisuals {
     }
 
     private static func drawIdleLight(center: CGPoint, radius: CGFloat, frame: VisualFrame, empty: Bool) {
-        drawGlassBase(center: center, radius: radius)
+        drawRingBase(center: center, radius: radius)
         let ringRadius = radius - 1.4 + frame.breath * 0.45
         let ringAlpha = empty ? 0.32 : 0.56 + frame.breath * 0.28
-        drawRingGlow(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 2.4, blur: empty ? 3.8 : 5.6)
+        drawRingGlow(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 2.6, blur: empty ? 4.5 : 7.0)
         drawRing(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 1.8)
     }
 
     private static func drawRunningLight(center: CGPoint, radius: CGFloat, frame: VisualFrame) {
-        drawGlassBase(center: center, radius: radius)
-        drawRing(center: center, radius: radius - 1.4, color: .white, alpha: 0.28, width: 1.5)
+        drawRingBase(center: center, radius: radius)
+        drawRingGlow(center: center, radius: radius - 1.4, color: .white, alpha: 0.22, width: 1.8, blur: 3.5)
+        drawRing(center: center, radius: radius - 1.4, color: .white, alpha: 0.26, width: 1.3)
 
         let arcRadius = radius - 1.7
         drawArcGlow(
@@ -189,40 +190,28 @@ enum StatusVisuals {
             width: 2.8,
             blur: 6.8
         )
-
-        let angle = (frame.runningStartAngle + 255) * .pi / 180
-        let lead = CGPoint(
-            x: center.x + CGFloat(cos(Double(angle))) * arcRadius,
-            y: center.y + CGFloat(sin(Double(angle))) * arcRadius
-        )
-        drawDisc(center: lead, radius: 1.8, color: .systemGreen, alpha: 1)
     }
 
     private static func drawApprovalLight(center: CGPoint, radius: CGFloat, frame: VisualFrame) {
-        drawGlassBase(center: center, radius: radius)
-        drawDisc(center: center, radius: radius - 1.1, color: .systemRed, alpha: 0.22)
-        drawRingGlow(center: center, radius: radius - 1.15, color: .systemRed, alpha: 0.92, width: 3.1, blur: 8.5)
-        drawRing(center: center, radius: radius - 1.15, color: .systemRed, alpha: 0.96, width: 2.4)
-        drawRing(center: center, radius: radius - 3.2, color: .white, alpha: 0.22, width: 0.7)
+        drawRingBase(center: center, radius: radius)
+        drawRingGlow(center: center, radius: radius - 1.25, color: .systemRed, alpha: 0.95, width: 3.2, blur: 9.5)
+        drawRing(center: center, radius: radius - 1.25, color: .systemRed, alpha: 0.98, width: 2.5)
     }
 
     private static func drawStaleLight(center: CGPoint, radius: CGFloat) {
-        drawGlassBase(center: center, radius: radius)
+        drawRingBase(center: center, radius: radius)
         drawRing(center: center, radius: radius - 1.2, color: .systemGray, alpha: 0.58, width: 2)
     }
 
     private static func drawUnknownLight(center: CGPoint, radius: CGFloat, frame: VisualFrame) {
-        drawGlassBase(center: center, radius: radius)
+        drawRingBase(center: center, radius: radius)
         drawRingGlow(center: center, radius: radius - 1.2, color: .systemRed, alpha: 0.36, width: 2.4, blur: 5)
         drawRing(center: center, radius: radius - 1.2, color: .systemRed, alpha: 0.72, width: 2.2)
     }
 
-    private static func drawGlassBase(center: CGPoint, radius: CGFloat) {
-        drawDisc(center: center, radius: radius, color: .black, alpha: 0.12)
-        drawDisc(center: center, radius: radius - 0.8, color: .white, alpha: 0.16)
-        drawDisc(center: CGPoint(x: center.x - radius * 0.24, y: center.y + radius * 0.26), radius: radius * 0.34, color: .white, alpha: 0.18)
-        drawRing(center: center, radius: radius - 0.4, color: .white, alpha: 0.34, width: 0.8)
-        drawRing(center: center, radius: radius - 0.1, color: .black, alpha: 0.18, width: 0.7)
+    private static func drawRingBase(center: CGPoint, radius: CGFloat) {
+        drawDisc(center: center, radius: radius - 0.8, color: .black, alpha: 0.10)
+        drawRing(center: center, radius: radius - 0.4, color: .black, alpha: 0.24, width: 0.9)
     }
 
     private static func drawRingGlow(center: CGPoint, radius: CGFloat, color: NSColor, alpha: CGFloat, width: CGFloat, blur: CGFloat) {
