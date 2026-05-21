@@ -41,7 +41,7 @@ final class AgentScanner {
         let ghosttySet = Set(ghosttyPids)
 
         let codexClients = codexProcesses(processes, processByPid: processByPid, ghosttyPids: ghosttySet)
-            .map { makeCodexClient(from: $0) }
+            .map { makeCodexClient(from: $0, processes: processes, processByPid: processByPid) }
         let claudeClients = processes
             .filter { isClaude($0) && isDescendant($0.pid, of: ghosttySet, processByPid: processByPid) }
             .map { makeClaudeClient(from: $0) }
@@ -151,8 +151,11 @@ final class AgentScanner {
         return result
     }
 
-    private func makeCodexClient(from process: ProcInfo) -> AgentClient {
-        let runtime = codexRuntimeInfo(pid: process.pid)
+    private func makeCodexClient(from process: ProcInfo, processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> AgentClient {
+        let runtime = codexRuntimeInfo(
+            pid: process.pid,
+            hasActiveToolChild: hasActiveChildProcess(rootPid: process.pid, processes: processes, processByPid: processByPid)
+        )
         let thread = runtime.threadId.flatMap { codexThreadInfo(threadId: $0) }
 
         return AgentClient(
@@ -187,7 +190,13 @@ final class AgentScanner {
         )
     }
 
-    private func codexRuntimeInfo(pid: Int) -> CodexRuntimeInfo {
+    private func hasActiveChildProcess(rootPid: Int, processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> Bool {
+        processes.contains {
+            $0.pid != rootPid && isDescendant($0.pid, of: Set([rootPid]), processByPid: processByPid)
+        }
+    }
+
+    private func codexRuntimeInfo(pid: Int, hasActiveToolChild: Bool) -> CodexRuntimeInfo {
         let db = "\(home)/.codex/logs_2.sqlite"
         guard fileManager.fileExists(atPath: db) else {
             return CodexRuntimeInfo(state: .unknown, threadId: nil, detail: "Codex logs not found", lastSeenAt: nil, waitingSince: nil)
@@ -224,14 +233,22 @@ final class AgentScanner {
 
         let threadId = latestCodexThreadId(pid: pid, db: db)
         let state: AgentState
-        let waitingNs = max(escalated, question)
-        let resolvedApprovalNs = max(max(max(approval, toolResult), questionResult), interrupt)
+        let approvalResolvedNs = max(max(approval, toolResult), interrupt)
+        let questionResolvedNs = max(questionResult, interrupt)
+        let approvalWaitingSince = dateFromNanoseconds(String(escalated))
+        let questionWaitingSince = dateFromNanoseconds(String(question))
+        let approvalIsMature = approvalWaitingSince.map { Date().timeIntervalSince($0) >= 1.2 } ?? false
+        let approvalPending = escalated > approvalResolvedNs && approvalIsMature && !hasActiveToolChild
+        let questionPending = question > questionResolvedNs
+        let waitingNs = questionPending ? question : (approvalPending ? escalated : 0)
         let waitingSince = dateFromNanoseconds(String(waitingNs))
-        let isWaitingForQuestion = question >= escalated && question > 0
+        let isWaitingForQuestion = questionPending && (questionWaitingSince != nil)
         let hasRecentTurnActivity = turnActivity.map { Date().timeIntervalSince($0) <= 12 } ?? false
 
-        if waitingNs > resolvedApprovalNs {
+        if approvalPending || questionPending {
             state = .waitingApproval
+        } else if hasActiveToolChild {
+            state = .running
         } else if turnStart > turnEnd {
             state = .running
         } else if hasRecentTurnActivity {

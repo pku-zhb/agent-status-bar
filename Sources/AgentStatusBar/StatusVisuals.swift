@@ -13,7 +13,7 @@ struct VisualFrame {
     }
 
     var runningStartAngle: CGFloat {
-        CGFloat((tick * 15) % 360)
+        CGFloat((tick * 6) % 360)
     }
 }
 
