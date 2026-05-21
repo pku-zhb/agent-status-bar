@@ -3,9 +3,16 @@ import Foundation
 
 struct VisualFrame {
     let tick: Int
+    let time: TimeInterval
+
+    init(tick: Int, time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        self.tick = tick
+        self.time = time
+    }
 
     var phase: CGFloat {
-        CGFloat(tick % 120) / 120
+        let cycle = 2.8
+        return CGFloat(time.truncatingRemainder(dividingBy: cycle) / cycle)
     }
 
     var breath: CGFloat {
@@ -13,7 +20,8 @@ struct VisualFrame {
     }
 
     var runningStartAngle: CGFloat {
-        CGFloat((tick * 6) % 360)
+        let cycle = 2.4
+        return CGFloat(time.truncatingRemainder(dividingBy: cycle) / cycle * 360)
     }
 }
 
@@ -235,8 +243,7 @@ enum StatusVisuals {
         width: CGFloat,
         blur: CGFloat
     ) {
-        let arc = NSBezierPath()
-        arc.appendArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: endAngle)
+        let arc = makeArcPath(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle)
         arc.lineWidth = width
         arc.lineCapStyle = .round
 
@@ -252,6 +259,29 @@ enum StatusVisuals {
 
         color.withAlphaComponent(alpha).setStroke()
         arc.stroke()
+    }
+
+    private static func makeArcPath(center: CGPoint, radius: CGFloat, startAngle: CGFloat, endAngle: CGFloat) -> NSBezierPath {
+        let sweep = endAngle - startAngle
+        let steps = max(16, Int(abs(sweep) / 3))
+        let path = NSBezierPath()
+
+        for step in 0...steps {
+            let progress = CGFloat(step) / CGFloat(steps)
+            let angle = (startAngle + sweep * progress) * .pi / 180
+            let point = CGPoint(
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
+            )
+
+            if step == 0 {
+                path.move(to: point)
+            } else {
+                path.line(to: point)
+            }
+        }
+
+        return path
     }
 
     private static func drawDisc(center: CGPoint, radius: CGFloat, color: NSColor, alpha: CGFloat) {

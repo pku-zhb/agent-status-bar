@@ -19,7 +19,7 @@ final class MenuBarController: NSObject {
                 self?.refresh()
             }
         }
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.animationTick += 1
                 self?.updateStatusIcon()
