@@ -19,6 +19,8 @@ struct VisualFrame {
 
 enum StatusVisuals {
     static let maxMenuBarLights = 5
+    private static let localClaudeIcon = loadIcon(named: "claude")
+    private static let localCodexIcon = loadIcon(named: "codex")
 
     static func brandColor(for kind: AgentKind) -> NSColor {
         switch kind {
@@ -43,6 +45,11 @@ enum StatusVisuals {
         let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
         let base = brandColor(for: kind)
         let alpha: CGFloat = muted ? 0.36 : 1
+
+        if let image = localIcon(for: kind) {
+            drawLocalIcon(image, in: rect, clipPath: path, alpha: alpha, muted: muted)
+            return
+        }
 
         NSGraphicsContext.saveGraphicsState()
         let shadow = NSShadow()
@@ -88,6 +95,55 @@ enum StatusVisuals {
             ),
             withAttributes: attributes
         )
+    }
+
+    private static func localIcon(for kind: AgentKind) -> NSImage? {
+        switch kind {
+        case .claude:
+            return localClaudeIcon
+        case .codex:
+            return localCodexIcon
+        }
+    }
+
+    private static func loadIcon(named name: String) -> NSImage? {
+        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+
+        let projectAsset = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Assets")
+            .appendingPathComponent("\(name).png")
+        return NSImage(contentsOf: projectAsset)
+    }
+
+    private static func drawLocalIcon(_ image: NSImage, in rect: CGRect, clipPath: NSBezierPath, alpha: CGFloat, muted: Bool) {
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(muted ? 0.05 : 0.18)
+        shadow.shadowOffset = NSSize(width: 0, height: -0.6)
+        shadow.shadowBlurRadius = 2.4
+        shadow.set()
+        NSColor.black.withAlphaComponent(0.08).setFill()
+        clipPath.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSGraphicsContext.saveGraphicsState()
+        clipPath.addClip()
+        image.draw(
+            in: rect,
+            from: .zero,
+            operation: .sourceOver,
+            fraction: alpha,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high]
+        )
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSColor.black.withAlphaComponent(muted ? 0.08 : 0.14).setStroke()
+        clipPath.lineWidth = 0.6
+        clipPath.stroke()
     }
 
     static func drawLight(state: AgentState?, center: CGPoint, radius: CGFloat, frame: VisualFrame) {

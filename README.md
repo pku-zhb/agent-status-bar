@@ -12,11 +12,11 @@ macOS menu bar app for tracking Codex and Claude Code clients running inside Gho
 ## UI
 
 The menu bar icon uses two groups: Claude Code first, Codex second. Each light is
-one detected session.
+one detected session, with stable ordering by session pid.
 
 - White breathing ring: idle but alive.
 - Green rotating ring with glow: currently running.
-- Red fast flash with glow: waiting for approval or user attention.
+- Red glowing ring: waiting for approval or user attention.
 - Gray dim: stale / not updated recently.
 
 The drop-down menu keeps the same model in Chinese sections: needs attention,

@@ -11,6 +11,8 @@ swift build -c release
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AgentStatusBar"
+cp "$ROOT/Assets/claude.png" "$APP/Contents/Resources/claude.png"
+cp "$ROOT/Assets/codex.png" "$APP/Contents/Resources/codex.png"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
