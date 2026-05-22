@@ -6,9 +6,7 @@ final class MenuBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let scanner = AgentScanner()
     private var scanTimer: Timer?
-    private var animationTimer: Timer?
     private var lastSnapshot = AgentSnapshot.empty
-    private var animationTick = 0
 
     override init() {
         super.init()
@@ -17,12 +15,6 @@ final class MenuBarController: NSObject {
         scanTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
-            }
-        }
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.animationTick += 1
-                self?.updateStatusIcon()
             }
         }
     }
@@ -46,7 +38,7 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else {
             return
         }
-        let image = StatusBarIconRenderer.render(snapshot: lastSnapshot, frame: VisualFrame(tick: animationTick))
+        let image = StatusBarIconRenderer.render(snapshot: lastSnapshot)
         statusItem.length = image.size.width + 10
         button.image = image
         button.toolTip = tooltipText()
@@ -57,15 +49,14 @@ final class MenuBarController: NSObject {
         let summary = lastSnapshot.summary
         let claudeClients = sessionSortedClients(lastSnapshot.clients.filter { $0.kind == .claude })
         let codexClients = sessionSortedClients(lastSnapshot.clients.filter { $0.kind == .codex })
-        let frame = VisualFrame(tick: animationTick)
 
         menu.addItem(disabled("Agent 状态"))
-        menu.addItem(viewItem(AgentGroupRowView(kind: .claude, clients: claudeClients, frame: frame)))
-        menu.addItem(viewItem(AgentGroupRowView(kind: .codex, clients: codexClients, frame: frame)))
-        menu.addItem(disabled("白环 空闲 · 绿环 运行中 · 红光 需处理 · 灰色 未更新"))
+        menu.addItem(viewItem(AgentGroupRowView(kind: .claude, clients: claudeClients)))
+        menu.addItem(viewItem(AgentGroupRowView(kind: .codex, clients: codexClients)))
+        menu.addItem(disabled("白环 空闲 · 绿环 运行中 · 红光 需处理"))
         menu.addItem(disabled("总数 \(summary.total) · 运行 \(summary.running) · 需处理 \(summary.waitingApproval)"))
-        if summary.stale > 0 || summary.unknown > 0 {
-            menu.addItem(disabled("未更新 \(summary.stale) · 未知 \(summary.unknown)"))
+        if summary.unknown > 0 {
+            menu.addItem(disabled("未知 \(summary.unknown)"))
         }
         menu.addItem(NSMenuItem.separator())
 
@@ -74,8 +65,8 @@ final class MenuBarController: NSObject {
         } else {
             addSection(title: "需要处理", clients: clients(in: .waitingApproval), emptyText: "无", to: menu)
             addSection(title: "运行中", clients: clients(in: .running), emptyText: "无", to: menu)
-            addSection(title: "空闲", clients: clients(in: .idle), emptyText: "无", to: menu)
-            addSection(title: "未更新 / 未知", clients: staleOrUnknownClients(), emptyText: "无", to: menu)
+            addSection(title: "空闲", clients: idleClients(), emptyText: "无", to: menu)
+            addSection(title: "未知", clients: unknownClients(), emptyText: "无", to: menu)
         }
 
         menu.addItem(NSMenuItem.separator())
@@ -105,8 +96,7 @@ final class MenuBarController: NSObject {
             menu.addItem(viewItem(AgentClientRowView(
                 client: client,
                 title: displayTitle(for: client),
-                subtitle: subtitle(for: client),
-                frame: VisualFrame(tick: animationTick)
+                subtitle: subtitle(for: client)
             )))
         }
     }
@@ -115,8 +105,12 @@ final class MenuBarController: NSObject {
         sortedClients(lastSnapshot.clients.filter { $0.state == state })
     }
 
-    private func staleOrUnknownClients() -> [AgentClient] {
-        sortedClients(lastSnapshot.clients.filter { $0.state == .stale || $0.state == .unknown })
+    private func idleClients() -> [AgentClient] {
+        sortedClients(lastSnapshot.clients.filter { $0.state == .idle || $0.state == .stale })
+    }
+
+    private func unknownClients() -> [AgentClient] {
+        sortedClients(lastSnapshot.clients.filter { $0.state == .unknown })
     }
 
     private func sessionSortedClients(_ clients: [AgentClient]) -> [AgentClient] {
@@ -151,7 +145,7 @@ final class MenuBarController: NSObject {
     }
 
     private func subtitle(for client: AgentClient) -> String {
-        var parts = [client.state.displayName]
+        var parts = [displayStateName(for: client.state)]
 
         if let waitingSince = client.waitingSince, client.state == .waitingApproval {
             parts.append("已等 \(durationText(since: waitingSince))")
@@ -167,6 +161,10 @@ final class MenuBarController: NSObject {
         }
 
         return parts.joined(separator: " · ")
+    }
+
+    private func displayStateName(for state: AgentState) -> String {
+        state == .stale ? AgentState.idle.displayName : state.displayName
     }
 
     private func tooltipText() -> String {

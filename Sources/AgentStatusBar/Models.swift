@@ -30,7 +30,7 @@ enum AgentState: String, Codable {
         case .idle:
             return "空闲"
         case .stale:
-            return "未更新"
+            return "空闲"
         case .unknown:
             return "未知"
         }
@@ -44,9 +44,7 @@ enum AgentState: String, Codable {
             return 1
         case .unknown:
             return 2
-        case .stale:
-            return 3
-        case .idle:
+        case .idle, .stale:
             return 4
         }
     }

@@ -1,30 +1,6 @@
 import AppKit
 import Foundation
 
-struct VisualFrame {
-    let tick: Int
-    let time: TimeInterval
-
-    init(tick: Int, time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        self.tick = tick
-        self.time = time
-    }
-
-    var phase: CGFloat {
-        let cycle = 2.8
-        return CGFloat(time.truncatingRemainder(dividingBy: cycle) / cycle)
-    }
-
-    var breath: CGFloat {
-        0.5 + 0.5 * CGFloat(sin(Double(phase * 2 * .pi)))
-    }
-
-    var runningStartAngle: CGFloat {
-        let cycle = 2.4
-        return CGFloat(time.truncatingRemainder(dividingBy: cycle) / cycle * 360)
-    }
-}
-
 enum StatusVisuals {
     static let maxMenuBarLights = 5
     private static let localClaudeIcon = loadIcon(named: "claude")
@@ -154,64 +130,47 @@ enum StatusVisuals {
         clipPath.stroke()
     }
 
-    static func drawLight(state: AgentState?, center: CGPoint, radius: CGFloat, frame: VisualFrame) {
+    static func drawLight(state: AgentState?, center: CGPoint, radius: CGFloat) {
         guard let state else {
-            drawIdleLight(center: center, radius: radius, frame: frame, empty: true)
+            drawIdleLight(center: center, radius: radius, empty: true)
             return
         }
 
         switch state {
         case .waitingApproval:
-            drawApprovalLight(center: center, radius: radius, frame: frame)
+            drawApprovalLight(center: center, radius: radius)
         case .running:
-            drawRunningLight(center: center, radius: radius, frame: frame)
+            drawRunningLight(center: center, radius: radius)
         case .idle:
-            drawIdleLight(center: center, radius: radius, frame: frame, empty: false)
+            drawIdleLight(center: center, radius: radius, empty: false)
         case .stale:
-            drawStaleLight(center: center, radius: radius)
+            drawIdleLight(center: center, radius: radius, empty: false)
         case .unknown:
-            drawUnknownLight(center: center, radius: radius, frame: frame)
+            drawUnknownLight(center: center, radius: radius)
         }
     }
 
-    private static func drawIdleLight(center: CGPoint, radius: CGFloat, frame: VisualFrame, empty: Bool) {
+    private static func drawIdleLight(center: CGPoint, radius: CGFloat, empty: Bool) {
         drawRingBase(center: center, radius: radius)
-        let ringRadius = radius - 1.4 + frame.breath * 0.45
-        let ringAlpha = empty ? 0.32 : 0.56 + frame.breath * 0.28
-        drawRingGlow(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 2.6, blur: empty ? 4.5 : 7.0)
-        drawRing(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 1.8)
+        let ringRadius = radius - 1.25
+        let ringAlpha: CGFloat = empty ? 0.36 : 0.82
+        drawRingGlow(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 2.6, blur: empty ? 4.0 : 6.5)
+        drawRing(center: center, radius: ringRadius, color: .white, alpha: ringAlpha, width: 1.9)
     }
 
-    private static func drawRunningLight(center: CGPoint, radius: CGFloat, frame: VisualFrame) {
+    private static func drawRunningLight(center: CGPoint, radius: CGFloat) {
         drawRingBase(center: center, radius: radius)
-        drawRingGlow(center: center, radius: radius - 1.4, color: .white, alpha: 0.22, width: 1.8, blur: 3.5)
-        drawRing(center: center, radius: radius - 1.4, color: .white, alpha: 0.26, width: 1.3)
-
-        let arcRadius = radius - 1.7
-        drawArcGlow(
-            center: center,
-            radius: arcRadius,
-            startAngle: frame.runningStartAngle,
-            endAngle: frame.runningStartAngle + 245,
-            color: .systemGreen,
-            alpha: 0.96,
-            width: 2.8,
-            blur: 6.8
-        )
+        drawRingGlow(center: center, radius: radius - 1.25, color: .systemGreen, alpha: 0.95, width: 3.0, blur: 7.5)
+        drawRing(center: center, radius: radius - 1.25, color: .systemGreen, alpha: 0.98, width: 2.4)
     }
 
-    private static func drawApprovalLight(center: CGPoint, radius: CGFloat, frame: VisualFrame) {
+    private static func drawApprovalLight(center: CGPoint, radius: CGFloat) {
         drawRingBase(center: center, radius: radius)
         drawRingGlow(center: center, radius: radius - 1.25, color: .systemRed, alpha: 0.95, width: 3.2, blur: 9.5)
         drawRing(center: center, radius: radius - 1.25, color: .systemRed, alpha: 0.98, width: 2.5)
     }
 
-    private static func drawStaleLight(center: CGPoint, radius: CGFloat) {
-        drawRingBase(center: center, radius: radius)
-        drawRing(center: center, radius: radius - 1.2, color: .systemGray, alpha: 0.58, width: 2)
-    }
-
-    private static func drawUnknownLight(center: CGPoint, radius: CGFloat, frame: VisualFrame) {
+    private static func drawUnknownLight(center: CGPoint, radius: CGFloat) {
         drawRingBase(center: center, radius: radius)
         drawRingGlow(center: center, radius: radius - 1.2, color: .systemRed, alpha: 0.36, width: 2.4, blur: 5)
         drawRing(center: center, radius: radius - 1.2, color: .systemRed, alpha: 0.72, width: 2.2)
@@ -233,57 +192,6 @@ enum StatusVisuals {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    private static func drawArcGlow(
-        center: CGPoint,
-        radius: CGFloat,
-        startAngle: CGFloat,
-        endAngle: CGFloat,
-        color: NSColor,
-        alpha: CGFloat,
-        width: CGFloat,
-        blur: CGFloat
-    ) {
-        let arc = makeArcPath(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle)
-        arc.lineWidth = width
-        arc.lineCapStyle = .round
-
-        NSGraphicsContext.saveGraphicsState()
-        let shadow = NSShadow()
-        shadow.shadowColor = color.withAlphaComponent(alpha)
-        shadow.shadowOffset = .zero
-        shadow.shadowBlurRadius = blur
-        shadow.set()
-        color.withAlphaComponent(alpha).setStroke()
-        arc.stroke()
-        NSGraphicsContext.restoreGraphicsState()
-
-        color.withAlphaComponent(alpha).setStroke()
-        arc.stroke()
-    }
-
-    private static func makeArcPath(center: CGPoint, radius: CGFloat, startAngle: CGFloat, endAngle: CGFloat) -> NSBezierPath {
-        let sweep = endAngle - startAngle
-        let steps = max(16, Int(abs(sweep) / 3))
-        let path = NSBezierPath()
-
-        for step in 0...steps {
-            let progress = CGFloat(step) / CGFloat(steps)
-            let angle = (startAngle + sweep * progress) * .pi / 180
-            let point = CGPoint(
-                x: center.x + cos(angle) * radius,
-                y: center.y + sin(angle) * radius
-            )
-
-            if step == 0 {
-                path.move(to: point)
-            } else {
-                path.line(to: point)
-            }
-        }
-
-        return path
-    }
-
     private static func drawDisc(center: CGPoint, radius: CGFloat, color: NSColor, alpha: CGFloat) {
         let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
         let disc = NSBezierPath(ovalIn: rect)
@@ -301,7 +209,7 @@ enum StatusVisuals {
 }
 
 enum StatusBarIconRenderer {
-    static func render(snapshot: AgentSnapshot, frame: VisualFrame) -> NSImage {
+    static func render(snapshot: AgentSnapshot) -> NSImage {
         let claude = sorted(snapshot.clients.filter { $0.kind == .claude })
         let codex = sorted(snapshot.clients.filter { $0.kind == .codex })
         let claudeOverflow = max(0, claude.count - StatusVisuals.maxMenuBarLights)
@@ -317,8 +225,8 @@ enum StatusBarIconRenderer {
         NSColor.clear.setFill()
         CGRect(origin: .zero, size: size).fill()
 
-        drawGroup(kind: .claude, clients: claude, overflow: claudeOverflow, atX: 0, frame: frame)
-        drawGroup(kind: .codex, clients: codex, overflow: codexOverflow, atX: claudeWidth + groupGap, frame: frame)
+        drawGroup(kind: .claude, clients: claude, overflow: claudeOverflow, atX: 0)
+        drawGroup(kind: .codex, clients: codex, overflow: codexOverflow, atX: claudeWidth + groupGap)
 
         image.unlockFocus()
         image.isTemplate = false
@@ -339,7 +247,7 @@ enum StatusBarIconRenderer {
         return firstLightX + CGFloat(visibleCount - 1) * lightStep + lastLightRadius + overflowWidth
     }
 
-    private static func drawGroup(kind: AgentKind, clients: [AgentClient], overflow: Int, atX x: CGFloat, frame: VisualFrame) {
+    private static func drawGroup(kind: AgentKind, clients: [AgentClient], overflow: Int, atX x: CGFloat) {
         let iconRect = CGRect(x: x + 3, y: 3, width: 18, height: 18)
         StatusVisuals.drawAgentIcon(kind: kind, in: iconRect, muted: clients.isEmpty)
 
@@ -349,8 +257,7 @@ enum StatusBarIconRenderer {
             StatusVisuals.drawLight(
                 state: client.state,
                 center: CGPoint(x: lightX, y: 12),
-                radius: 9.5,
-                frame: frame
+                radius: 9.5
             )
             lightX += 24
         }
@@ -375,12 +282,10 @@ enum StatusBarIconRenderer {
 final class AgentGroupRowView: NSView {
     private let kind: AgentKind
     private let clients: [AgentClient]
-    private let frameState: VisualFrame
 
-    init(kind: AgentKind, clients: [AgentClient], frame: VisualFrame) {
+    init(kind: AgentKind, clients: [AgentClient]) {
         self.kind = kind
         self.clients = clients
-        self.frameState = frame
         super.init(frame: CGRect(x: 0, y: 0, width: 370, height: 38))
     }
 
@@ -418,8 +323,7 @@ final class AgentGroupRowView: NSView {
             StatusVisuals.drawLight(
                 state: client.state,
                 center: CGPoint(x: x, y: 19),
-                radius: 9.5,
-                frame: frameState
+                radius: 9.5
             )
             x += 22
         }
@@ -441,13 +345,11 @@ final class AgentClientRowView: NSView {
     private let client: AgentClient
     private let title: String
     private let subtitle: String
-    private let frameState: VisualFrame
 
-    init(client: AgentClient, title: String, subtitle: String, frame: VisualFrame) {
+    init(client: AgentClient, title: String, subtitle: String) {
         self.client = client
         self.title = title
         self.subtitle = subtitle
-        self.frameState = frame
         super.init(frame: CGRect(x: 0, y: 0, width: 370, height: 46))
     }
 
@@ -461,8 +363,7 @@ final class AgentClientRowView: NSView {
         StatusVisuals.drawLight(
             state: client.state,
             center: CGPoint(x: 18.5, y: 26),
-            radius: 9.5,
-            frame: frameState
+            radius: 9.5
         )
 
         (client.kind.displayName as NSString).draw(

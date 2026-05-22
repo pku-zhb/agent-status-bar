@@ -253,8 +253,6 @@ final class AgentScanner {
             state = .running
         } else if hasRecentTurnActivity {
             state = .running
-        } else if let lastSeen, Date().timeIntervalSince(lastSeen) > 600 {
-            state = .stale
         } else if lastSeen != nil {
             state = .idle
         } else {
@@ -270,7 +268,7 @@ final class AgentScanner {
         case .idle:
             detail = "idle"
         case .stale:
-            detail = "no recent Codex log"
+            detail = "idle"
         case .unknown:
             detail = "no Codex log match"
         }
@@ -346,7 +344,7 @@ final class AgentScanner {
 
     private func mapClaudeState(_ status: String?, updatedAt: Date?) -> AgentState {
         if let updatedAt, Date().timeIntervalSince(updatedAt) > 1800 {
-            return .stale
+            return .idle
         }
 
         let value = (status ?? "").lowercased()
