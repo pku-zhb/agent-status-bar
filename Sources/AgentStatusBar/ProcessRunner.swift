@@ -1,23 +1,5 @@
 import Foundation
 
-final class LockedDataBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        data.append(chunk)
-        lock.unlock()
-    }
-
-    func string() -> String {
-        lock.lock()
-        let snapshot = data
-        lock.unlock()
-        return String(data: snapshot, encoding: .utf8) ?? ""
-    }
-}
-
 struct CommandResult {
     let exitCode: Int32
     let stdout: String
@@ -35,24 +17,6 @@ enum ProcessRunner {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        let stdoutBuffer = LockedDataBuffer()
-        let stderrBuffer = LockedDataBuffer()
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                return
-            }
-            stdoutBuffer.append(data)
-        }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                return
-            }
-            stderrBuffer.append(data)
-        }
-
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
 
@@ -62,18 +26,33 @@ enum ProcessRunner {
             return nil
         }
 
-        if finished.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + 1)
+        let timeoutWork = DispatchWorkItem {
+            if process.isRunning {
+                process.terminate()
+            }
         }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
 
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        let stdoutData = readAll(stdoutPipe.fileHandleForReading)
+        let stderrData = readAll(stderrPipe.fileHandleForReading)
+        _ = finished.wait(timeout: .now() + 1)
+        timeoutWork.cancel()
 
         return CommandResult(
             exitCode: process.terminationStatus,
-            stdout: stdoutBuffer.string(),
-            stderr: stderrBuffer.string()
+            stdout: String(decoding: stdoutData, as: UTF8.self),
+            stderr: String(decoding: stderrData, as: UTF8.self)
         )
+    }
+
+    private static func readAll(_ handle: FileHandle) -> Data {
+        var result = Data()
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                return result
+            }
+            result.append(chunk)
+        }
     }
 }

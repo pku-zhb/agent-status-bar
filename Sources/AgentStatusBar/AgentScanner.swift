@@ -97,7 +97,7 @@ final class AgentScanner {
     private func isCodexNative(_ process: ProcInfo) -> Bool {
         process.args.contains("@openai/codex")
             && process.args.contains("/vendor/")
-            && process.args.contains("/codex/codex")
+            && (process.args.contains("/codex/codex") || process.args.hasSuffix("/bin/codex"))
     }
 
     private func isCodexWrapper(_ process: ProcInfo) -> Bool {
