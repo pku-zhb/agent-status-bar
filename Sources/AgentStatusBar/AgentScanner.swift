@@ -180,6 +180,7 @@ final class AgentScanner {
     private let home: String
     private let fileManager = FileManager.default
     private let sqlitePath = "/usr/bin/sqlite3"
+    private let runningLifecycleFreshness: TimeInterval = 30
 
     init(home: String = NSHomeDirectory()) {
         self.home = home
@@ -571,13 +572,9 @@ final class AgentScanner {
             return .waitingApproval
         }
 
-        if hasActiveToolChild {
-            return .running
-        }
-
         if let lifecycle = hook?.lifecycle?.lowercased() {
-            if lifecycle.contains("running") || lifecycle.contains("busy") {
-                return .running
+            if isWaitingLifecycle(lifecycle) {
+                return hasLiveProcess ? .idle : .stale
             }
             if lifecycle.contains("idle") {
                 return .idle
@@ -585,6 +582,16 @@ final class AgentScanner {
             if lifecycle.contains("unknown") {
                 return hasLiveProcess ? .idle : .unknown
             }
+        }
+
+        if hasActiveToolChild {
+            return .running
+        }
+
+        if let lifecycle = hook?.lifecycle?.lowercased(),
+           lifecycle.contains("running") || lifecycle.contains("busy"),
+           isRecent(hook?.updatedAt, within: runningLifecycleFreshness) {
+            return .running
         }
 
         if let workstream {
@@ -694,9 +701,21 @@ final class AgentScanner {
     }
 
     private func hasActiveChildProcess(rootPid: Int, processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> Bool {
-        processes.contains {
-            $0.pid != rootPid && isDescendant($0.pid, of: Set([rootPid]), processByPid: processByPid)
+        let roots = Set([rootPid])
+        return processes.contains {
+            $0.pid != rootPid
+                && !isIgnorableAgentChild($0)
+                && isDescendant($0.pid, of: roots, processByPid: processByPid)
         }
+    }
+
+    private func isIgnorableAgentChild(_ process: ProcInfo) -> Bool {
+        let executable = URL(fileURLWithPath: process.comm).lastPathComponent
+        return executable == "caffeinate"
+            || process.args == "caffeinate"
+            || process.args.hasPrefix("caffeinate ")
+            || process.args == "/usr/bin/caffeinate"
+            || process.args.hasPrefix("/usr/bin/caffeinate ")
     }
 
     private func isDescendant(_ pid: Int, of roots: Set<Int>, processByPid: [Int: ProcInfo]) -> Bool {
@@ -1037,6 +1056,13 @@ final class AgentScanner {
 
     private func newestDate(_ dates: Date?...) -> Date? {
         dates.compactMap { $0 }.max()
+    }
+
+    private func isRecent(_ date: Date?, within seconds: TimeInterval) -> Bool {
+        guard let date else {
+            return false
+        }
+        return Date().timeIntervalSince(date) <= seconds
     }
 
     private func compareDates(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {
