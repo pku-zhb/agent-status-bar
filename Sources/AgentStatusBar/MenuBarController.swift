@@ -5,8 +5,13 @@ import Foundation
 final class MenuBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let scanner = AgentScanner()
+    private let creditRefreshQueue = DispatchQueue(label: "AgentStatusBar.CreditRefresh", qos: .utility)
+    private let home = NSHomeDirectory()
     private var scanTimer: Timer?
     private var lastSnapshot = AgentSnapshot.empty
+    private var lastCredits = AgentCreditSnapshot.empty
+    private var creditRefreshInFlight = false
+    private var nextCreditRefreshAt = Date.distantPast
 
     override init() {
         super.init()
@@ -30,6 +35,7 @@ final class MenuBarController: NSObject {
 
     @objc private func refresh() {
         lastSnapshot = scanner.scan()
+        refreshCreditsIfNeeded()
         updateStatusIcon()
         rebuildMenu()
     }
@@ -38,7 +44,7 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else {
             return
         }
-        let image = StatusBarIconRenderer.render(snapshot: lastSnapshot)
+        let image = StatusBarIconRenderer.render(snapshot: lastSnapshot, credits: lastCredits)
         statusItem.length = image.size.width + 10
         button.image = image
         button.toolTip = tooltipText()
@@ -51,8 +57,16 @@ final class MenuBarController: NSObject {
         let codexClients = sessionSortedClients(lastSnapshot.clients.filter { $0.kind == .codex })
 
         menu.addItem(disabled("Agent 状态"))
-        menu.addItem(viewItem(AgentGroupRowView(kind: .claude, clients: claudeClients)))
-        menu.addItem(viewItem(AgentGroupRowView(kind: .codex, clients: codexClients)))
+        menu.addItem(viewItem(AgentGroupRowView(
+            kind: .claude,
+            clients: claudeClients,
+            credit: credit(for: .claude)
+        )))
+        menu.addItem(viewItem(AgentGroupRowView(
+            kind: .codex,
+            clients: codexClients,
+            credit: credit(for: .codex)
+        )))
         menu.addItem(disabled("白环 空闲 · 绿环 运行中 · 红光 需处理"))
         menu.addItem(disabled("总数 \(summary.total) · 运行 \(summary.running) · 需处理 \(summary.waitingApproval)"))
         if summary.unknown > 0 {
@@ -61,7 +75,7 @@ final class MenuBarController: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         if lastSnapshot.clients.isEmpty {
-            menu.addItem(disabled("Ghostty 里没有检测到 Codex / Claude Code"))
+            menu.addItem(disabled("cmux 里没有检测到 Codex / Claude Code"))
         } else {
             addSection(title: "需要处理", clients: clients(in: .waitingApproval), emptyText: "无", to: menu)
             addSection(title: "运行中", clients: clients(in: .running), emptyText: "无", to: menu)
@@ -169,7 +183,44 @@ final class MenuBarController: NSObject {
 
     private func tooltipText() -> String {
         let summary = lastSnapshot.summary
-        return "Claude \(summary.claude) · Codex \(summary.codex) · 运行 \(summary.running) · 需处理 \(summary.waitingApproval)"
+        return "Claude \(summary.claude)\(tooltipCreditSuffix(for: .claude)) · Codex \(summary.codex)\(tooltipCreditSuffix(for: .codex)) · 运行 \(summary.running) · 需处理 \(summary.waitingApproval)"
+    }
+
+    private func refreshCreditsIfNeeded(force: Bool = false) {
+        let now = Date()
+        guard force || now >= nextCreditRefreshAt else {
+            return
+        }
+        guard !creditRefreshInFlight else {
+            return
+        }
+
+        creditRefreshInFlight = true
+        nextCreditRefreshAt = now.addingTimeInterval(60)
+        let home = home
+        creditRefreshQueue.async { [weak self, home] in
+            let credits = CreditScanner(home: home).scan()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.lastCredits = credits.replacingMissingValues(with: self.lastCredits)
+                self.creditRefreshInFlight = false
+                self.updateStatusIcon()
+                self.rebuildMenu()
+            }
+        }
+    }
+
+    private func credit(for kind: AgentKind) -> AgentCreditStatus? {
+        lastCredits.status(for: kind)
+    }
+
+    private func tooltipCreditSuffix(for kind: AgentKind) -> String {
+        guard let credit = lastCredits.status(for: kind) else {
+            return ""
+        }
+        return " (\(credit.menuText))"
     }
 
     private func disabled(_ title: String) -> NSMenuItem {
@@ -200,7 +251,8 @@ final class MenuBarController: NSObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(lastSnapshot),
+        let snapshot = DebugSnapshot(agents: lastSnapshot, credits: lastCredits)
+        guard let data = try? encoder.encode(snapshot),
               let text = String(data: data, encoding: .utf8) else {
             return
         }
@@ -211,4 +263,9 @@ final class MenuBarController: NSObject {
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
     }
+}
+
+private struct DebugSnapshot: Codable {
+    let agents: AgentSnapshot
+    let credits: AgentCreditSnapshot
 }

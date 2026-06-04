@@ -150,6 +150,35 @@ enum StatusVisuals {
         }
     }
 
+    static func drawVerticalUsageBar(
+        usedPercent: Int?,
+        in rect: CGRect,
+        fillColor: NSColor = .white
+    ) {
+        fillColor.withAlphaComponent(0.18).setFill()
+        rect.fill()
+
+        guard let usedPercent else {
+            return
+        }
+
+        let clamped = min(100, max(0, usedPercent))
+        guard clamped > 0 else {
+            return
+        }
+
+        let fillHeight = max(2, rect.height * CGFloat(clamped) / 100)
+        let fillRect = CGRect(
+            x: rect.minX,
+            y: rect.minY,
+            width: rect.width,
+            height: min(rect.height, fillHeight)
+        )
+
+        fillColor.setFill()
+        fillRect.fill()
+    }
+
     private static func drawIdleLight(center: CGPoint, radius: CGFloat, empty: Bool) {
         drawRingBase(center: center, radius: radius)
         let ringRadius = radius - 1.25
@@ -209,14 +238,16 @@ enum StatusVisuals {
 }
 
 enum StatusBarIconRenderer {
-    static func render(snapshot: AgentSnapshot) -> NSImage {
+    static func render(snapshot: AgentSnapshot, credits: AgentCreditSnapshot = .empty) -> NSImage {
         let claude = sorted(snapshot.clients.filter { $0.kind == .claude })
         let codex = sorted(snapshot.clients.filter { $0.kind == .codex })
         let claudeOverflow = max(0, claude.count - StatusVisuals.maxMenuBarLights)
         let codexOverflow = max(0, codex.count - StatusVisuals.maxMenuBarLights)
+        let claudeCredit = credits.status(for: .claude)
+        let codexCredit = credits.status(for: .codex)
 
-        let claudeWidth = groupWidth(for: claude, overflow: claudeOverflow)
-        let codexWidth = groupWidth(for: codex, overflow: codexOverflow)
+        let claudeWidth = groupWidth(for: claude, overflow: claudeOverflow, credit: claudeCredit)
+        let codexWidth = groupWidth(for: codex, overflow: codexOverflow, credit: codexCredit)
         let groupGap: CGFloat = 10
         let size = NSSize(width: claudeWidth + groupGap + codexWidth, height: 24)
         let image = NSImage(size: size)
@@ -225,29 +256,30 @@ enum StatusBarIconRenderer {
         NSColor.clear.setFill()
         CGRect(origin: .zero, size: size).fill()
 
-        drawGroup(kind: .claude, clients: claude, overflow: claudeOverflow, atX: 0)
-        drawGroup(kind: .codex, clients: codex, overflow: codexOverflow, atX: claudeWidth + groupGap)
+        drawGroup(kind: .claude, clients: claude, overflow: claudeOverflow, credit: claudeCredit, atX: 0)
+        drawGroup(kind: .codex, clients: codex, overflow: codexOverflow, credit: codexCredit, atX: claudeWidth + groupGap)
 
         image.unlockFocus()
         image.isTemplate = false
         return image
     }
 
-    private static func groupWidth(for clients: [AgentClient], overflow: Int) -> CGFloat {
+    private static func groupWidth(for clients: [AgentClient], overflow: Int, credit: AgentCreditStatus?) -> CGFloat {
         let visibleCount = min(clients.count, StatusVisuals.maxMenuBarLights)
         let iconWidth: CGFloat = 24
+        let creditWidth: CGFloat = credit == nil ? 0 : 58
         guard visibleCount > 0 else {
-            return iconWidth
+            return iconWidth + creditWidth
         }
 
         let firstLightX: CGFloat = 38
         let lightStep: CGFloat = 24
         let lastLightRadius: CGFloat = 9.5
         let overflowWidth: CGFloat = overflow > 0 ? 27 : 5
-        return firstLightX + CGFloat(visibleCount - 1) * lightStep + lastLightRadius + overflowWidth
+        return firstLightX + CGFloat(visibleCount - 1) * lightStep + lastLightRadius + overflowWidth + creditWidth
     }
 
-    private static func drawGroup(kind: AgentKind, clients: [AgentClient], overflow: Int, atX x: CGFloat) {
+    private static func drawGroup(kind: AgentKind, clients: [AgentClient], overflow: Int, credit: AgentCreditStatus?, atX x: CGFloat) {
         let iconRect = CGRect(x: x + 3, y: 3, width: 18, height: 18)
         StatusVisuals.drawAgentIcon(kind: kind, in: iconRect, muted: clients.isEmpty)
 
@@ -262,6 +294,7 @@ enum StatusBarIconRenderer {
             lightX += 24
         }
 
+        var creditX: CGFloat = clients.isEmpty ? x + 27 : lightX - 7
         if overflow > 0 {
             let text = "+\(overflow)" as NSString
             let attributes: [NSAttributedString.Key: Any] = [
@@ -269,7 +302,42 @@ enum StatusBarIconRenderer {
                 .foregroundColor: NSColor.labelColor
             ]
             text.draw(at: CGPoint(x: lightX - 2, y: 3.6), withAttributes: attributes)
+            creditX = lightX + textWidth(String(text), attributes: attributes) + 4
         }
+
+        if let credit {
+            drawMenuBarCreditMeters(credit, atX: creditX)
+        }
+    }
+
+    private static func drawMenuBarCreditMeters(_ credit: AgentCreditStatus, atX x: CGFloat) {
+        let barY: CGFloat = 3
+        let barWidth: CGFloat = 9
+        let barHeight: CGFloat = 18
+        StatusVisuals.drawVerticalUsageBar(
+            usedPercent: credit.fiveHourUsedPercent,
+            in: CGRect(x: x, y: barY, width: barWidth, height: barHeight),
+            fillColor: .white
+        )
+        StatusVisuals.drawVerticalUsageBar(
+            usedPercent: credit.fiveHourResetElapsedPercent,
+            in: CGRect(x: x + 12, y: barY, width: barWidth, height: barHeight),
+            fillColor: .white
+        )
+        StatusVisuals.drawVerticalUsageBar(
+            usedPercent: credit.weeklyUsedPercent,
+            in: CGRect(x: x + 30, y: barY, width: barWidth, height: barHeight),
+            fillColor: .white
+        )
+        StatusVisuals.drawVerticalUsageBar(
+            usedPercent: credit.weeklyResetElapsedPercent,
+            in: CGRect(x: x + 42, y: barY, width: barWidth, height: barHeight),
+            fillColor: .white
+        )
+    }
+
+    private static func textWidth(_ text: String, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: attributes).width)
     }
 
     private static func sorted(_ clients: [AgentClient]) -> [AgentClient] {
@@ -282,11 +350,13 @@ enum StatusBarIconRenderer {
 final class AgentGroupRowView: NSView {
     private let kind: AgentKind
     private let clients: [AgentClient]
+    private let credit: AgentCreditStatus?
 
-    init(kind: AgentKind, clients: [AgentClient]) {
+    init(kind: AgentKind, clients: [AgentClient], credit: AgentCreditStatus? = nil) {
         self.kind = kind
         self.clients = clients
-        super.init(frame: CGRect(x: 0, y: 0, width: 370, height: 38))
+        self.credit = credit
+        super.init(frame: CGRect(x: 0, y: 0, width: 492, height: 58))
     }
 
     required init?(coder: NSCoder) {
@@ -296,21 +366,25 @@ final class AgentGroupRowView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        let iconRect = CGRect(x: 12, y: 10, width: 18, height: 18)
+        let iconRect = CGRect(x: 12, y: 29, width: 18, height: 18)
         StatusVisuals.drawAgentIcon(kind: kind, in: iconRect, muted: clients.isEmpty)
 
         let title = kind.displayName as NSString
         title.draw(
-            in: CGRect(x: 40, y: 14, width: 105, height: 15),
+            in: CGRect(x: 40, y: 38, width: 105, height: 15),
             withAttributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
                 .foregroundColor: NSColor.labelColor
             ]
         )
 
+        if let credit {
+            drawCreditMeters(credit, at: CGPoint(x: 145, y: 8))
+        }
+
         let countText = "\(clients.count) 个会话" as NSString
         countText.draw(
-            in: CGRect(x: 145, y: 14, width: 72, height: 15),
+            in: CGRect(x: 40, y: 16, width: 72, height: 15),
             withAttributes: [
                 .font: NSFont.systemFont(ofSize: 12, weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor
@@ -318,11 +392,11 @@ final class AgentGroupRowView: NSView {
         )
 
         let visible = Array(clients.prefix(8))
-        var x: CGFloat = 185
+        var x: CGFloat = 284
         for client in visible {
             StatusVisuals.drawLight(
                 state: client.state,
-                center: CGPoint(x: x, y: 19),
+                center: CGPoint(x: x, y: 22),
                 radius: 9.5
             )
             x += 22
@@ -331,13 +405,44 @@ final class AgentGroupRowView: NSView {
         if clients.count > visible.count {
             let overflow = "+\(clients.count - visible.count)" as NSString
             overflow.draw(
-                at: CGPoint(x: x - 1, y: 12),
+                at: CGPoint(x: x - 1, y: 15),
                 withAttributes: [
                     .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
                     .foregroundColor: NSColor.secondaryLabelColor
                 ]
             )
         }
+    }
+
+    private func drawCreditMeters(_ credit: AgentCreditStatus, at origin: CGPoint) {
+        drawMeter(
+            usedPercent: credit.fiveHourUsedPercent,
+            at: origin,
+            fillColor: .white
+        )
+        drawMeter(
+            usedPercent: credit.fiveHourResetElapsedPercent,
+            at: CGPoint(x: origin.x + 22, y: origin.y),
+            fillColor: .white
+        )
+        drawMeter(
+            usedPercent: credit.weeklyUsedPercent,
+            at: CGPoint(x: origin.x + 58, y: origin.y),
+            fillColor: .white
+        )
+        drawMeter(
+            usedPercent: credit.weeklyResetElapsedPercent,
+            at: CGPoint(x: origin.x + 80, y: origin.y),
+            fillColor: .white
+        )
+    }
+
+    private func drawMeter(usedPercent: Int?, at origin: CGPoint, fillColor: NSColor) {
+        StatusVisuals.drawVerticalUsageBar(
+            usedPercent: usedPercent,
+            in: CGRect(x: origin.x, y: origin.y, width: 17, height: 42),
+            fillColor: fillColor
+        )
     }
 }
 

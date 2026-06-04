@@ -1,12 +1,14 @@
 # Agent Status Bar
 
-macOS menu bar app for tracking Codex and Claude Code clients running inside Ghostty.
+macOS menu bar app for tracking Codex and Claude Code clients running inside cmux.
 
 ## MVP
 
-- Counts Codex and Claude Code processes that are descendants of Ghostty.
-- Reads Claude Code session files from `~/.claude/sessions/<pid>.json`.
-- Maps Codex process ids to `~/.codex/logs_2.sqlite` and `~/.codex/state_5.sqlite`.
+- Counts Codex and Claude Code sessions attached to cmux terminal surfaces.
+- Reads cmux session, hook, and workstream files from `~/Library/Application Support/cmux`
+  and `~/.cmuxterm`.
+- Maps live Codex process ids to `~/.codex/logs_2.sqlite` and
+  `~/.codex/state_5.sqlite` for detailed running / approval state.
 - Displays Claude and Codex as separate menu bar light arrays.
 
 ## UI
@@ -47,6 +49,18 @@ open dist/AgentStatusBar.app
 This app does not install or read hooks. It derives state from local process and
 state files only:
 
-- Ghostty process tree for active Codex / Claude Code clients.
-- Codex sqlite logs for running, approval-waiting, idle, and stale states.
-- Claude Code session files for busy, idle, and stale states.
+- cmux session surfaces from `session-com.cmuxterm.app.json`.
+- cmux agent hook sessions from `~/.cmuxterm/<agent>-hook-sessions.json`.
+- cmux Feed / agent activity from `~/.cmuxterm/workstream.jsonl`.
+- Codex sqlite logs for detailed running, approval-waiting, idle, and stale
+  states when a live Codex process is attached to a cmux TTY.
+- Claude Code credit-left percentages from
+  `~/.claude/plugins/claude-hud/.usage-cache.json`.
+- Codex credit-left percentages from the local Codex app-server
+  `account/rateLimits/read` API.
+
+For full Codex Feed / restore metadata, install cmux's Codex integration:
+
+```bash
+cmux hooks setup --agent codex
+```
