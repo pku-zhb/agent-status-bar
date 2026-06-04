@@ -565,13 +565,9 @@ final class AgentScanner {
         hasLiveProcess: Bool,
         hasActiveToolChild: Bool
     ) -> AgentState {
-        if isWaiting(hook?.lifecycle)
-            || isWaiting(hook?.lastSubtitle)
-            || isWaiting(hook?.lastBody)
-            || panel?.notifications.contains(where: { isWaiting($0.title) || isWaiting($0.subtitle) || isWaiting($0.body) }) == true
-            || isWaiting(workstream?.eventKind)
-            || isWaiting(workstream?.title)
-            || isWaiting(workstream?.text) {
+        if isPendingHookInteraction(hook)
+            || isPendingInteractionEvent(workstream?.eventKind)
+            || hasWaitingNotification(panel) {
             return .waitingApproval
         }
 
@@ -641,32 +637,60 @@ final class AgentScanner {
         }
     }
 
+    private func hasWaitingNotification(_ panel: CmuxPanelSnapshot?) -> Bool {
+        guard let notification = latestNotification(panel),
+              notification.isRead != true else {
+            return false
+        }
+        return isExplicitWaitingLabel(notification.title) || isExplicitWaitingLabel(notification.subtitle)
+    }
+
+    private func isPendingHookInteraction(_ hook: CmuxHookSession?) -> Bool {
+        guard isWaitingLifecycle(hook?.lifecycle) else {
+            return false
+        }
+        return isExplicitWaitingLabel(hook?.lastSubtitle)
+            || isExplicitWaitingLabel(hook?.title)
+    }
+
     private func isWaiting(_ value: String?) -> Bool {
+        isWaitingLifecycle(value) || isPendingInteractionEvent(value) || isExplicitWaitingLabel(value)
+    }
+
+    private func isWaitingLifecycle(_ value: String?) -> Bool {
         guard let value, !value.isEmpty else {
             return false
         }
-        let lower = value.lowercased()
-        let compact = lower.filter { $0.isLetter || $0.isNumber }
+        let compact = value.lowercased().filter { $0.isLetter || $0.isNumber }
+        return compact == "needsinput" || compact == "waitingapproval"
+    }
 
-        if lower == "waiting"
-            || lower.contains("waiting for your input")
-            || lower.contains("claude is waiting")
-            || lower.contains("completed") {
+    private func isPendingInteractionEvent(_ value: String?) -> Bool {
+        guard let value, !value.isEmpty else {
             return false
         }
+        let compact = value.lowercased().filter { $0.isLetter || $0.isNumber }
+        return compact == "permissionrequest"
+            || compact == "approvalrequest"
+            || compact == "question"
+            || compact == "askuserquestion"
+    }
 
-        return compact.contains("needsinput")
-            || lower.contains("permission")
-            || lower.contains("approval")
-            || lower.contains("approve")
-            || lower.contains("confirm")
-            || lower.contains("question")
-            || lower.contains("批准")
-            || lower.contains("确认")
-            || lower.contains("问题")
-            || lower.contains("回答")
-            || lower.contains("权限")
-            || lower.contains("需处理")
+    private func isExplicitWaitingLabel(_ value: String?) -> Bool {
+        guard let value, !value.isEmpty else {
+            return false
+        }
+        let lower = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let compact = lower.filter { $0.isLetter || $0.isNumber }
+        return lower == "permission"
+            || lower == "approval"
+            || lower == "needs permission"
+            || lower == "permission required"
+            || lower == "approval required"
+            || lower == "question"
+            || lower == "askuserquestion"
+            || compact == "askuserquestion"
+            || lower == "需处理"
     }
 
     private func hasActiveChildProcess(rootPid: Int, processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> Bool {
@@ -895,7 +919,7 @@ final class AgentScanner {
                     surfaceId: session.surfaceId,
                     cwd: session.cwd,
                     title: titleFromHookSession(session),
-                    lifecycle: session.lifecycle ?? session.status,
+                    lifecycle: session.agentLifecycle ?? session.lifecycle ?? session.status,
                     lastSubtitle: session.lastSubtitle,
                     lastBody: session.lastBody,
                     updatedAt: dateFromSeconds(session.updatedAt),
@@ -1091,6 +1115,7 @@ private struct CmuxHookSessionFile: Decodable {
     let sessions: [String: Session]
 
     struct Session: Decodable {
+        let agentLifecycle: String?
         let cwd: String?
         let lifecycle: String?
         let status: String?
