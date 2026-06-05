@@ -1,12 +1,11 @@
 # Agent Status Bar
 
-macOS menu bar app for tracking Codex and Claude Code clients running inside cmux.
+macOS menu bar app for tracking Codex and Claude Code clients running in local terminal sessions.
 
 ## MVP
 
-- Counts Codex and Claude Code sessions attached to cmux terminal surfaces.
-- Reads cmux session, hook, and workstream files from `~/Library/Application Support/cmux`
-  and `~/.cmuxterm`.
+- Counts live Codex and Claude Code processes attached to real TTYs, including
+  Terminal, iTerm, tmux, and cmux panes.
 - Maps live Codex process ids to `~/.codex/logs_2.sqlite` and
   `~/.codex/state_5.sqlite` for detailed running / approval state.
 - Displays Claude and Codex as separate menu bar light arrays.
@@ -49,18 +48,13 @@ open dist/AgentStatusBar.app
 This app does not install or read hooks. It derives state from local process and
 state files only:
 
-- cmux session surfaces from `session-com.cmuxterm.app.json`.
-- cmux agent hook sessions from `~/.cmuxterm/<agent>-hook-sessions.json`.
-- cmux Feed / agent activity from `~/.cmuxterm/workstream.jsonl`.
+- Live terminal processes from `ps`.
 - Codex sqlite logs for detailed running, approval-waiting, idle, and stale
-  states when a live Codex process is attached to a cmux TTY.
+  states when a live Codex process is attached to a TTY.
+- Claude Code session files in `~/.claude/sessions/<pid>.json` for cwd,
+  title, and busy / idle / waiting state. If the session file is missing or
+  stale, the app falls back to process-child activity.
 - Claude Code credit-left percentages from
   `~/.claude/plugins/claude-hud/.usage-cache.json`.
 - Codex credit-left percentages from the local Codex app-server
   `account/rateLimits/read` API.
-
-For full Codex Feed / restore metadata, install cmux's Codex integration:
-
-```bash
-cmux hooks setup --agent codex
-```

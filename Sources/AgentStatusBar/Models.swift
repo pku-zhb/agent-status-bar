@@ -79,7 +79,7 @@ struct AgentSummary: Codable {
 
 struct AgentSnapshot: Codable {
     let generatedAt: Date
-    let cmuxPids: [Int]
+    let agentPids: [Int]
     let clients: [AgentClient]
     let summary: AgentSummary
 }
@@ -178,7 +178,7 @@ struct AgentCreditStatus: Codable {
 extension AgentSnapshot {
     static let empty = AgentSnapshot(
         generatedAt: Date(),
-        cmuxPids: [],
+        agentPids: [],
         clients: [],
         summary: AgentSummary(
             total: 0,

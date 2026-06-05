@@ -23,164 +23,23 @@ struct CodexRuntimeInfo {
     let waitingSince: Date?
 }
 
-struct CmuxPanelSnapshot {
-    let id: String
-    let workspaceTitle: String?
-    let workspaceCwd: String?
-    let title: String?
-    let customTitle: String?
-    let cwd: String?
-    let tty: String?
-    let terminalAgentKind: AgentKind?
-    let terminalAgentSessionId: String?
-    let resumeKind: AgentKind?
-    let resumeSessionId: String?
-    let notifications: [CmuxNotificationSnapshot]
-
-    var displayTitle: String? {
-        customTitle ?? title ?? workspaceTitle
-    }
-
-    var effectiveCwd: String? {
-        cwd ?? workspaceCwd
-    }
-}
-
-struct CmuxNotificationSnapshot {
-    let title: String?
-    let subtitle: String?
-    let body: String?
-    let createdAt: Date?
-    let isRead: Bool?
-}
-
-struct CmuxHookSession {
-    let kind: AgentKind
-    let sessionId: String
-    let pid: Int?
-    let workspaceId: String?
-    let surfaceId: String?
-    let cwd: String?
-    let title: String?
-    let lifecycle: String?
-    let lastSubtitle: String?
-    let lastBody: String?
-    let updatedAt: Date?
-    let startedAt: Date?
-    let isRestorable: Bool?
-}
-
-struct CmuxWorkstreamItem {
-    let kind: AgentKind
-    let workstreamId: String
+struct ClaudeSessionInfo: Decodable {
+    let pid: Int
     let sessionId: String?
-    let eventKind: String
-    let pid: Int?
     let cwd: String?
-    let title: String?
-    let text: String?
-    let toolName: String?
-    let createdAt: Date?
-    let updatedAt: Date?
-
-    var lastSeenAt: Date? {
-        updatedAt ?? createdAt
-    }
-}
-
-struct CmuxHookIndex {
-    var byKindSession: [AgentKind: [String: CmuxHookSession]] = [:]
-    var byKindSurface: [AgentKind: [String: CmuxHookSession]] = [:]
-    var byKindWorkspace: [AgentKind: [String: CmuxHookSession]] = [:]
-
-    mutating func add(_ session: CmuxHookSession) {
-        byKindSession[session.kind, default: [:]][session.sessionId] = session
-        if let surfaceId = session.surfaceId {
-            byKindSurface[session.kind, default: [:]][surfaceId] = session
-        }
-        if let workspaceId = session.workspaceId {
-            byKindWorkspace[session.kind, default: [:]][workspaceId] = session
-        }
-    }
-
-    func session(kind: AgentKind, panel: CmuxPanelSnapshot?) -> CmuxHookSession? {
-        if let sessionId = panel?.terminalAgentSessionId,
-           let session = byKindSession[kind]?[sessionId] {
-            return session
-        }
-        if let sessionId = panel?.resumeSessionId,
-           let session = byKindSession[kind]?[sessionId] {
-            return session
-        }
-        if let surfaceId = panel?.id,
-           let session = byKindSurface[kind]?[surfaceId] {
-            return session
-        }
-        return nil
-    }
-}
-
-struct CmuxWorkstreamIndex {
-    var byKindSession: [AgentKind: [String: CmuxWorkstreamItem]] = [:]
-    var byKindPid: [AgentKind: [Int: CmuxWorkstreamItem]] = [:]
-
-    mutating func add(_ item: CmuxWorkstreamItem) {
-        if let sessionId = item.sessionId {
-            Self.update(&byKindSession[item.kind, default: [:]], key: sessionId, item: item)
-        }
-        if let pid = item.pid {
-            Self.update(&byKindPid[item.kind, default: [:]], key: pid, item: item)
-        }
-    }
-
-    func latest(kind: AgentKind, sessionId: String?, pid: Int?) -> CmuxWorkstreamItem? {
-        let bySession = sessionId.flatMap { byKindSession[kind]?[$0] }
-        let byPid = pid.flatMap { byKindPid[kind]?[$0] }
-        return newestWorkstreamItem(bySession, byPid)
-    }
-
-    private static func update<Key: Hashable>(
-        _ dictionary: inout [Key: CmuxWorkstreamItem],
-        key: Key,
-        item: CmuxWorkstreamItem
-    ) {
-        if let existing = dictionary[key],
-           compareOptionalDates(item.lastSeenAt, existing.lastSeenAt) != .orderedDescending {
-            return
-        }
-        dictionary[key] = item
-    }
-}
-
-private func compareOptionalDates(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {
-    switch (lhs, rhs) {
-    case (.none, .none):
-        return .orderedSame
-    case (.some, .none):
-        return .orderedDescending
-    case (.none, .some):
-        return .orderedAscending
-    case (.some(let lhs), .some(let rhs)):
-        return lhs.compare(rhs)
-    }
-}
-
-private func newestWorkstreamItem(_ lhs: CmuxWorkstreamItem?, _ rhs: CmuxWorkstreamItem?) -> CmuxWorkstreamItem? {
-    switch (lhs, rhs) {
-    case (.none, .none):
-        return nil
-    case (.some(let item), .none), (.none, .some(let item)):
-        return item
-    case (.some(let lhs), .some(let rhs)):
-        return compareOptionalDates(lhs.lastSeenAt, rhs.lastSeenAt) == .orderedAscending ? rhs : lhs
-    }
+    let startedAt: Double?
+    let status: String?
+    let updatedAt: Double?
+    let name: String?
+    let kind: String?
+    let entrypoint: String?
 }
 
 final class AgentScanner {
     private let home: String
     private let fileManager = FileManager.default
     private let sqlitePath = "/usr/bin/sqlite3"
-    private let runningLifecycleFreshness: TimeInterval = 30
+    private let claudeBusyFreshness: TimeInterval = 5 * 60
 
     init(home: String = NSHomeDirectory()) {
         self.home = home
@@ -189,111 +48,33 @@ final class AgentScanner {
     func scan() -> AgentSnapshot {
         let processes = loadProcesses()
         let processByPid = Dictionary(uniqueKeysWithValues: processes.map { ($0.pid, $0) })
-        let cmuxPids = processes
-            .filter { isCmux($0) }
-            .map(\.pid)
-            .sorted()
+        let claudeSessions = loadClaudeSessions()
 
-        let panels = loadCmuxPanels()
-        let cmuxTtys = Set(panels.compactMap(\.tty))
-        let hookIndex = loadCmuxHookIndex()
-        let workstreamIndex = loadCmuxWorkstreamIndex()
-        let codexByTTY = bestProcessesByTTY(
-            codexProcesses(processes, processByPid: processByPid, allowedTtys: cmuxTtys)
-        )
-        let claudeByTTY = bestProcessesByTTY(
-            processes.filter { isClaude($0) && cmuxTtys.contains($0.tty) }
-        )
-
-        var usedProcessPids = Set<Int>()
-        var clients: [AgentClient] = []
-
-        for panel in panels {
-            let kinds = agentKinds(
-                for: panel,
-                codexProcess: panel.tty.flatMap { codexByTTY[$0] },
-                claudeProcess: panel.tty.flatMap { claudeByTTY[$0] },
-                hooks: hookIndex
-            )
-
-            for kind in kinds {
-                let process = panel.tty.flatMap { tty in
-                    kind == .codex ? codexByTTY[tty] : claudeByTTY[tty]
-                }
-                if let process {
-                    usedProcessPids.insert(process.pid)
-                }
-                let hook = hookIndex.session(kind: kind, panel: panel)
-                let workstream = workstreamIndex.latest(
-                    kind: kind,
-                    sessionId: hook?.sessionId ?? panel.terminalAgentSessionId ?? panel.resumeSessionId,
-                    pid: process?.pid ?? hook?.pid
+        let codexClients = codexProcesses(processes, processByPid: processByPid).map {
+            makeCodexClient(process: $0, processes: processes, processByPid: processByPid)
+        }
+        let claudeClients = processes
+            .filter { isTerminalProcess($0) && isClaude($0) }
+            .map {
+                makeClaudeClient(
+                    process: $0,
+                    session: claudeSessions[$0.pid],
+                    processes: processes,
+                    processByPid: processByPid
                 )
-
-                switch kind {
-                case .codex:
-                    clients.append(makeCodexClient(
-                        panel: panel,
-                        process: process,
-                        hook: hook,
-                        workstream: workstream,
-                        processes: processes,
-                        processByPid: processByPid
-                    ))
-                case .claude:
-                    clients.append(makeClaudeClient(
-                        panel: panel,
-                        process: process,
-                        hook: hook,
-                        workstream: workstream,
-                        processes: processes,
-                        processByPid: processByPid
-                    ))
-                }
             }
-        }
 
-        for process in codexProcesses(processes, processByPid: processByPid, allowedTtys: cmuxTtys)
-            where !usedProcessPids.contains(process.pid) {
-            usedProcessPids.insert(process.pid)
-            let workstream = workstreamIndex.latest(kind: .codex, sessionId: nil, pid: process.pid)
-            clients.append(makeCodexClient(
-                panel: nil,
-                process: process,
-                hook: nil,
-                workstream: workstream,
-                processes: processes,
-                processByPid: processByPid
-            ))
-        }
-
-        for process in processes.filter({ isClaude($0) && cmuxTtys.contains($0.tty) })
-            where !usedProcessPids.contains(process.pid) {
-            let workstream = workstreamIndex.latest(kind: .claude, sessionId: nil, pid: process.pid)
-            clients.append(makeClaudeClient(
-                panel: nil,
-                process: process,
-                hook: nil,
-                workstream: workstream,
-                processes: processes,
-                processByPid: processByPid
-            ))
-        }
-
-        let sortedClients = dedupe(clients)
+        let sortedClients = dedupe(codexClients + claudeClients)
             .sorted {
                 if $0.kind.rawValue != $1.kind.rawValue {
                     return $0.kind.rawValue < $1.kind.rawValue
-                }
-                if ($0.workspaceId ?? "") != ($1.workspaceId ?? "") {
-                    return ($0.workspaceId ?? "") < ($1.workspaceId ?? "")
                 }
                 return $0.pid < $1.pid
             }
 
         return AgentSnapshot(
             generatedAt: Date(),
-            cmuxPids: cmuxPids,
+            agentPids: sortedClients.map(\.pid).sorted(),
             clients: sortedClients,
             summary: makeSummary(sortedClients)
         )
@@ -328,14 +109,18 @@ final class AgentScanner {
         )
     }
 
-    private func isCmux(_ process: ProcInfo) -> Bool {
-        process.args.contains("/Applications/cmux.app/Contents/MacOS/cmux")
-            || process.args.contains("/Applications/cmux.app/Contents/Resources/bin/cmux")
-            || process.comm == "cmux"
+    private func isTerminalProcess(_ process: ProcInfo) -> Bool {
+        process.tty != "??"
+    }
+
+    private func executableName(_ process: ProcInfo) -> String {
+        URL(fileURLWithPath: process.comm).lastPathComponent
     }
 
     private func isClaude(_ process: ProcInfo) -> Bool {
-        process.comm == "claude"
+        let executable = executableName(process)
+        return executable == "claude"
+            || executable == "claude-code"
             || process.args == "claude"
             || process.args.hasPrefix("claude ")
             || process.args.hasSuffix("/claude")
@@ -344,97 +129,40 @@ final class AgentScanner {
     }
 
     private func isCodexNative(_ process: ProcInfo) -> Bool {
-        process.args.contains("@openai/codex")
+        if executableName(process) == "codex" {
+            return true
+        }
+        return process.args.contains("@openai/codex")
             && process.args.contains("/vendor/")
-            && (process.args.contains("/codex/codex") || process.args.hasSuffix("/bin/codex"))
+            && (process.args.contains("/codex/codex")
+                || process.args.hasSuffix("/bin/codex")
+                || process.args.contains("/bin/codex "))
     }
 
     private func isCodexWrapper(_ process: ProcInfo) -> Bool {
-        process.comm == "node"
+        executableName(process) == "node"
             && process.args.contains("/bin/codex")
             && !process.args.contains("/node_modules/")
     }
 
-    private func codexProcesses(
-        _ processes: [ProcInfo],
-        processByPid: [Int: ProcInfo],
-        allowedTtys: Set<String>
-    ) -> [ProcInfo] {
+    private func codexProcesses(_ processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> [ProcInfo] {
         let native = processes.filter {
-            isCodexNative($0) && allowedTtys.contains($0.tty)
+            isTerminalProcess($0) && isCodexNative($0)
         }
         let nativeAncestorPids = Set(native.flatMap { ancestors(of: $0.pid, processByPid: processByPid) })
         let wrappers = processes.filter {
-            isCodexWrapper($0)
-                && allowedTtys.contains($0.tty)
+            isTerminalProcess($0)
+                && isCodexWrapper($0)
                 && !nativeAncestorPids.contains($0.pid)
         }
         return native + wrappers
-    }
-
-    private func bestProcessesByTTY(_ processes: [ProcInfo]) -> [String: ProcInfo] {
-        processes.reduce(into: [:]) { result, process in
-            guard process.tty != "??" else {
-                return
-            }
-            if let current = result[process.tty],
-               processRank(process) >= processRank(current) {
-                return
-            }
-            result[process.tty] = process
-        }
-    }
-
-    private func processRank(_ process: ProcInfo) -> Int {
-        if isCodexNative(process) {
-            return 0
-        }
-        if isClaude(process) {
-            return 0
-        }
-        return 1
-    }
-
-    private func agentKinds(
-        for panel: CmuxPanelSnapshot,
-        codexProcess: ProcInfo?,
-        claudeProcess: ProcInfo?,
-        hooks: CmuxHookIndex
-    ) -> [AgentKind] {
-        var result = Set<AgentKind>()
-        if let terminalAgentKind = panel.terminalAgentKind {
-            result.insert(terminalAgentKind)
-        }
-        if let resumeKind = panel.resumeKind {
-            result.insert(resumeKind)
-        }
-        if codexProcess != nil {
-            result.insert(.codex)
-        }
-        if claudeProcess != nil {
-            result.insert(.claude)
-        }
-        if let sessionId = panel.terminalAgentSessionId {
-            for kind in [AgentKind.codex, .claude] where hooks.byKindSession[kind]?[sessionId] != nil {
-                result.insert(kind)
-            }
-        }
-        if let sessionId = panel.resumeSessionId {
-            for kind in [AgentKind.codex, .claude] where hooks.byKindSession[kind]?[sessionId] != nil {
-                result.insert(kind)
-            }
-        }
-        for kind in [AgentKind.codex, .claude] where hooks.byKindSurface[kind]?[panel.id] != nil {
-            result.insert(kind)
-        }
-        return result.sorted { $0.rawValue < $1.rawValue }
     }
 
     private func dedupe(_ clients: [AgentClient]) -> [AgentClient] {
         var result: [AgentClient] = []
         var seen = Set<String>()
         for client in clients {
-            let key = "\(client.kind.rawValue):\(client.surfaceId ?? "pid-\(client.pid)")"
+            let key = "\(client.kind.rawValue):\(client.pid)"
             if seen.insert(key).inserted {
                 result.append(client)
             }
@@ -443,184 +171,142 @@ final class AgentScanner {
     }
 
     private func makeCodexClient(
-        panel: CmuxPanelSnapshot?,
-        process: ProcInfo?,
-        hook: CmuxHookSession?,
-        workstream: CmuxWorkstreamItem?,
+        process: ProcInfo,
         processes: [ProcInfo],
         processByPid: [Int: ProcInfo]
     ) -> AgentClient {
-        let runtime = process.map {
-            codexRuntimeInfo(
-                pid: $0.pid,
-                hasActiveToolChild: hasActiveChildProcess(rootPid: $0.pid, processes: processes, processByPid: processByPid)
-            )
-        }
-        let thread = runtime?.threadId.flatMap { codexThreadInfo(threadId: $0) }
-        let cmuxState = cmuxState(
-            kind: .codex,
-            panel: panel,
-            hook: hook,
-            workstream: workstream,
-            hasLiveProcess: process != nil,
-            hasActiveToolChild: process.map {
-                hasActiveChildProcess(rootPid: $0.pid, processes: processes, processByPid: processByPid)
-            } ?? false
-        )
-        let state = resolvedCodexState(runtime?.state, cmuxState: cmuxState)
+        let hasActiveChild = hasActiveChildProcess(rootPid: process.pid, processes: processes, processByPid: processByPid)
+        let fallbackState = processState(hasActiveChild: hasActiveChild)
+        let runtime = codexRuntimeInfo(pid: process.pid, hasActiveToolChild: hasActiveChild)
+        let thread = runtime.threadId.flatMap { codexThreadInfo(threadId: $0) }
+        let state = resolvedState(runtime.state, fallback: fallbackState)
 
         return AgentClient(
-            id: stableClientId(kind: .codex, panel: panel, hook: hook, process: process),
+            id: "codex-\(process.pid)",
             kind: .codex,
-            pid: process?.pid ?? hook?.pid ?? 0,
-            parentPid: process?.ppid ?? 0,
-            workspaceId: hook?.workspaceId,
-            surfaceId: panel?.id ?? hook?.surfaceId,
-            tty: panel?.tty ?? process?.tty,
+            pid: process.pid,
+            parentPid: process.ppid,
+            workspaceId: nil,
+            surfaceId: nil,
+            tty: process.tty,
             state: state,
-            cwd: thread?.cwd ?? panel?.effectiveCwd ?? hook?.cwd ?? workstream?.cwd,
-            title: thread?.title ?? panel?.displayTitle ?? hook?.title ?? workstream?.title,
-            detail: runtime?.detail ?? detailText(source: "cmux", state: state),
-            lastSeenAt: newestDate(runtime?.lastSeenAt, thread?.updatedAt, workstream?.lastSeenAt, hook?.updatedAt),
-            waitingSince: state == .waitingApproval ? runtime?.waitingSince ?? workstream?.lastSeenAt ?? hook?.updatedAt : nil
+            cwd: thread?.cwd,
+            title: thread?.title ?? processTitle(kind: .codex, process: process),
+            detail: runtime.detail ?? detailText(source: "process", state: state),
+            lastSeenAt: newestDate(runtime.lastSeenAt, thread?.updatedAt),
+            waitingSince: state == .waitingApproval ? runtime.waitingSince : nil
         )
     }
 
     private func makeClaudeClient(
-        panel: CmuxPanelSnapshot?,
-        process: ProcInfo?,
-        hook: CmuxHookSession?,
-        workstream: CmuxWorkstreamItem?,
+        process: ProcInfo,
+        session: ClaudeSessionInfo?,
         processes: [ProcInfo],
         processByPid: [Int: ProcInfo]
     ) -> AgentClient {
-        let hasActiveChild = process.map {
-            hasActiveChildProcess(rootPid: $0.pid, processes: processes, processByPid: processByPid)
-        } ?? false
-        let state = cmuxState(
-            kind: .claude,
-            panel: panel,
-            hook: hook,
-            workstream: workstream,
-            hasLiveProcess: process != nil,
-            hasActiveToolChild: hasActiveChild
-        )
-        let sessionTitle: String?
-        if let sessionId = hook?.sessionId {
-            sessionTitle = "session \(sessionId.prefix(8))"
-        } else {
-            sessionTitle = nil
-        }
-        let title = panel?.displayTitle ?? hook?.title ?? workstream?.title ?? sessionTitle
+        let hasActiveChild = hasActiveChildProcess(rootPid: process.pid, processes: processes, processByPid: processByPid)
+        let sessionUpdatedAt = dateFromMilliseconds(session?.updatedAt)
+        let state = claudeState(session: session, hasActiveChild: hasActiveChild)
 
         return AgentClient(
-            id: stableClientId(kind: .claude, panel: panel, hook: hook, process: process),
+            id: "claude-\(process.pid)",
             kind: .claude,
-            pid: process?.pid ?? hook?.pid ?? 0,
-            parentPid: process?.ppid ?? 0,
-            workspaceId: hook?.workspaceId,
-            surfaceId: panel?.id ?? hook?.surfaceId,
-            tty: panel?.tty ?? process?.tty,
+            pid: process.pid,
+            parentPid: process.ppid,
+            workspaceId: nil,
+            surfaceId: nil,
+            tty: process.tty,
             state: state,
-            cwd: panel?.effectiveCwd ?? hook?.cwd ?? workstream?.cwd,
-            title: title,
-            detail: detailText(source: "cmux", state: state),
-            lastSeenAt: newestDate(workstream?.lastSeenAt, hook?.updatedAt, hook?.startedAt, latestNotification(panel)?.createdAt),
-            waitingSince: state == .waitingApproval ? newestDate(workstream?.lastSeenAt, hook?.updatedAt, latestNotification(panel)?.createdAt) : nil
+            cwd: session?.cwd,
+            title: claudeTitle(session: session, process: process),
+            detail: claudeDetail(session: session, state: state),
+            lastSeenAt: sessionUpdatedAt,
+            waitingSince: state == .waitingApproval ? sessionUpdatedAt : nil
         )
     }
 
-    private func stableClientId(
-        kind: AgentKind,
-        panel: CmuxPanelSnapshot?,
-        hook: CmuxHookSession?,
-        process: ProcInfo?
-    ) -> String {
-        if let surfaceId = panel?.id ?? hook?.surfaceId {
-            return "\(kind.rawValue)-surface-\(surfaceId)"
+    private func processTitle(kind: AgentKind, process: ProcInfo) -> String {
+        if let tty = process.tty.nilIfEmpty {
+            return "\(kind.displayName) \(tty)"
         }
-        if let sessionId = hook?.sessionId ?? panel?.terminalAgentSessionId ?? panel?.resumeSessionId {
-            return "\(kind.rawValue)-session-\(sessionId)"
-        }
-        return "\(kind.rawValue)-\(process?.pid ?? 0)"
+        return kind.displayName
     }
 
-    private func resolvedCodexState(_ runtimeState: AgentState?, cmuxState: AgentState) -> AgentState {
-        if cmuxState == .waitingApproval {
-            return cmuxState
-        }
-        guard let runtimeState else {
-            return cmuxState
-        }
-        if runtimeState == .unknown && cmuxState != .unknown {
-            return cmuxState
-        }
-        return runtimeState
+    private func processState(hasActiveChild: Bool) -> AgentState {
+        hasActiveChild ? .running : .idle
     }
 
-    private func cmuxState(
-        kind: AgentKind,
-        panel: CmuxPanelSnapshot?,
-        hook: CmuxHookSession?,
-        workstream: CmuxWorkstreamItem?,
-        hasLiveProcess: Bool,
-        hasActiveToolChild: Bool
-    ) -> AgentState {
-        if isPendingHookInteraction(hook)
-            || isPendingInteractionEvent(workstream?.eventKind)
-            || hasWaitingNotification(panel) {
-            return .waitingApproval
+    private func claudeState(session: ClaudeSessionInfo?, hasActiveChild: Bool) -> AgentState {
+        guard let status = session?.status?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !status.isEmpty else {
+            return processState(hasActiveChild: hasActiveChild)
         }
 
-        if let lifecycle = hook?.lifecycle?.lowercased() {
-            if isWaitingLifecycle(lifecycle) {
-                return hasLiveProcess ? .idle : .stale
-            }
-            if lifecycle.contains("idle") {
-                return .idle
-            }
-            if lifecycle.contains("unknown") {
-                return hasLiveProcess ? .idle : .unknown
-            }
-        }
-
-        if hasActiveToolChild {
-            return .running
-        }
-
-        if let lifecycle = hook?.lifecycle?.lowercased(),
-           lifecycle.contains("running") || lifecycle.contains("busy"),
-           isRecent(hook?.updatedAt, within: runningLifecycleFreshness) {
-            return .running
-        }
-
-        if let workstream {
-            let eventKind = workstream.eventKind.lowercased()
-            if eventKind == "userprompt" || eventKind == "tooluse" {
+        let compact = status.lowercased().filter { $0.isLetter || $0.isNumber }
+        if compact == "busy" || compact == "running" || compact == "thinking" || compact == "working" {
+            if hasActiveChild || isRecent(dateFromMilliseconds(session?.updatedAt), within: claudeBusyFreshness) {
                 return .running
             }
-            if eventKind == "sessionstart" {
-                if let lastSeenAt = workstream.lastSeenAt,
-                   Date().timeIntervalSince(lastSeenAt) <= 30 {
-                    return .running
-                }
-                return hasLiveProcess ? .idle : .stale
-            }
-            if eventKind == "sessionend" {
-                return hasLiveProcess ? .idle : .stale
-            }
-            if eventKind == "stop" || eventKind == "subagentstop" || eventKind == "toolresult" || eventKind == "notification" {
-                return hasLiveProcess ? .idle : .stale
-            }
-        }
-
-        if hasLiveProcess {
             return .idle
         }
-        if hook?.isRestorable == true {
+        if compact == "waiting"
+            || compact == "needsinput"
+            || compact == "needsapproval"
+            || compact == "waitingapproval"
+            || compact == "blocked"
+            || compact == "paused" {
+            return .waitingApproval
+        }
+        if compact == "idle" || compact == "ready" {
+            return .idle
+        }
+        if compact == "ended" || compact == "exited" || compact == "closed" {
             return .stale
         }
-        return kind == .claude || kind == .codex ? .unknown : .unknown
+        return processState(hasActiveChild: hasActiveChild)
+    }
+
+    private func claudeTitle(session: ClaudeSessionInfo?, process: ProcInfo) -> String {
+        if let name = session?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            return name
+        }
+        return processTitle(kind: .claude, process: process)
+    }
+
+    private func claudeDetail(session: ClaudeSessionInfo?, state: AgentState) -> String {
+        if let status = session?.status?.nilIfEmpty {
+            let compact = status.lowercased().filter { $0.isLetter || $0.isNumber }
+            if state == .idle,
+               (compact == "busy" || compact == "running" || compact == "thinking" || compact == "working") {
+                return "claude session: stale \(status)"
+            }
+            return "claude session: \(status)"
+        }
+        return detailText(source: "process", state: state)
+    }
+
+    private func resolvedState(_ runtimeState: AgentState, fallback: AgentState) -> AgentState {
+        runtimeState == .unknown ? fallback : runtimeState
+    }
+
+    private func loadClaudeSessions() -> [Int: ClaudeSessionInfo] {
+        let directory = "\(home)/.claude/sessions"
+        guard let files = try? fileManager.contentsOfDirectory(atPath: directory) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        var sessions: [Int: ClaudeSessionInfo] = [:]
+        for file in files where file.hasSuffix(".json") {
+            let path = "\(directory)/\(file)"
+            guard let data = fileManager.contents(atPath: path),
+                  let session = try? decoder.decode(ClaudeSessionInfo.self, from: data) else {
+                continue
+            }
+            sessions[session.pid] = session
+        }
+        return sessions
     }
 
     private func detailText(source: String, state: AgentState) -> String {
@@ -638,68 +324,6 @@ final class AgentScanner {
         }
     }
 
-    private func latestNotification(_ panel: CmuxPanelSnapshot?) -> CmuxNotificationSnapshot? {
-        panel?.notifications.max {
-            compareDates($0.createdAt, $1.createdAt) == .orderedAscending
-        }
-    }
-
-    private func hasWaitingNotification(_ panel: CmuxPanelSnapshot?) -> Bool {
-        guard let notification = latestNotification(panel),
-              notification.isRead != true else {
-            return false
-        }
-        return isExplicitWaitingLabel(notification.title) || isExplicitWaitingLabel(notification.subtitle)
-    }
-
-    private func isPendingHookInteraction(_ hook: CmuxHookSession?) -> Bool {
-        guard isWaitingLifecycle(hook?.lifecycle) else {
-            return false
-        }
-        return isExplicitWaitingLabel(hook?.lastSubtitle)
-            || isExplicitWaitingLabel(hook?.title)
-    }
-
-    private func isWaiting(_ value: String?) -> Bool {
-        isWaitingLifecycle(value) || isPendingInteractionEvent(value) || isExplicitWaitingLabel(value)
-    }
-
-    private func isWaitingLifecycle(_ value: String?) -> Bool {
-        guard let value, !value.isEmpty else {
-            return false
-        }
-        let compact = value.lowercased().filter { $0.isLetter || $0.isNumber }
-        return compact == "needsinput" || compact == "waitingapproval"
-    }
-
-    private func isPendingInteractionEvent(_ value: String?) -> Bool {
-        guard let value, !value.isEmpty else {
-            return false
-        }
-        let compact = value.lowercased().filter { $0.isLetter || $0.isNumber }
-        return compact == "permissionrequest"
-            || compact == "approvalrequest"
-            || compact == "question"
-            || compact == "askuserquestion"
-    }
-
-    private func isExplicitWaitingLabel(_ value: String?) -> Bool {
-        guard let value, !value.isEmpty else {
-            return false
-        }
-        let lower = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let compact = lower.filter { $0.isLetter || $0.isNumber }
-        return lower == "permission"
-            || lower == "approval"
-            || lower == "needs permission"
-            || lower == "permission required"
-            || lower == "approval required"
-            || lower == "question"
-            || lower == "askuserquestion"
-            || compact == "askuserquestion"
-            || lower == "需处理"
-    }
-
     private func hasActiveChildProcess(rootPid: Int, processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> Bool {
         let roots = Set([rootPid])
         return processes.contains {
@@ -710,7 +334,7 @@ final class AgentScanner {
     }
 
     private func isIgnorableAgentChild(_ process: ProcInfo) -> Bool {
-        let executable = URL(fileURLWithPath: process.comm).lastPathComponent
+        let executable = executableName(process)
         return executable == "caffeinate"
             || process.args == "caffeinate"
             || process.args.hasPrefix("caffeinate ")
@@ -749,7 +373,7 @@ final class AgentScanner {
     private func codexRuntimeInfo(pid: Int, hasActiveToolChild: Bool) -> CodexRuntimeInfo {
         let db = "\(home)/.codex/logs_2.sqlite"
         guard fileManager.fileExists(atPath: db) else {
-            return CodexRuntimeInfo(state: .unknown, threadId: nil, detail: "Codex logs not found", lastSeenAt: nil, waitingSince: nil)
+            return CodexRuntimeInfo(state: .unknown, threadId: nil, detail: nil, lastSeenAt: nil, waitingSince: nil)
         }
 
         let like = "pid:\(pid):%"
@@ -820,7 +444,7 @@ final class AgentScanner {
         case .stale:
             detail = "idle"
         case .unknown:
-            detail = "no Codex log match"
+            detail = nil
         }
 
         return CodexRuntimeInfo(
@@ -884,137 +508,6 @@ final class AgentScanner {
             }
     }
 
-    private func loadCmuxPanels() -> [CmuxPanelSnapshot] {
-        let path = "\(home)/Library/Application Support/cmux/session-com.cmuxterm.app.json"
-        guard let data = fileManager.contents(atPath: path),
-              let session = try? JSONDecoder().decode(CmuxAppSession.self, from: data) else {
-            return []
-        }
-
-        return session.windows.flatMap { window in
-            window.tabManager?.workspaces.flatMap { workspace in
-                workspace.panels.map { panel in
-                    CmuxPanelSnapshot(
-                        id: panel.id,
-                        workspaceTitle: workspace.customTitle ?? workspace.processTitle,
-                        workspaceCwd: workspace.currentDirectory,
-                        title: panel.title,
-                        customTitle: panel.customTitle,
-                        cwd: panel.terminal?.workingDirectory ?? panel.directory,
-                        tty: panel.ttyName,
-                        terminalAgentKind: agentKind(panel.terminal?.agent?.kind),
-                        terminalAgentSessionId: panel.terminal?.agent?.sessionId,
-                        resumeKind: agentKind(panel.terminal?.resumeBinding?.kind),
-                        resumeSessionId: panel.terminal?.resumeBinding?.checkpointId,
-                        notifications: panel.notifications?.map {
-                            CmuxNotificationSnapshot(
-                                title: $0.title,
-                                subtitle: $0.subtitle,
-                                body: $0.body,
-                                createdAt: dateFromSeconds($0.createdAt),
-                                isRead: $0.isRead
-                            )
-                        } ?? []
-                    )
-                }
-            } ?? []
-        }
-    }
-
-    private func loadCmuxHookIndex() -> CmuxHookIndex {
-        var index = CmuxHookIndex()
-        for kind in [AgentKind.codex, .claude] {
-            let path = "\(home)/.cmuxterm/\(kind.rawValue)-hook-sessions.json"
-            guard let data = fileManager.contents(atPath: path),
-                  let hookFile = try? JSONDecoder().decode(CmuxHookSessionFile.self, from: data) else {
-                continue
-            }
-            for (sessionId, session) in hookFile.sessions {
-                index.add(CmuxHookSession(
-                    kind: kind,
-                    sessionId: session.sessionId ?? sessionId,
-                    pid: session.pid,
-                    workspaceId: session.workspaceId,
-                    surfaceId: session.surfaceId,
-                    cwd: session.cwd,
-                    title: titleFromHookSession(session),
-                    lifecycle: session.agentLifecycle ?? session.lifecycle ?? session.status,
-                    lastSubtitle: session.lastSubtitle,
-                    lastBody: session.lastBody,
-                    updatedAt: dateFromSeconds(session.updatedAt),
-                    startedAt: dateFromSeconds(session.startedAt),
-                    isRestorable: session.isRestorable
-                ))
-            }
-        }
-        return index
-    }
-
-    private func titleFromHookSession(_ session: CmuxHookSessionFile.Session) -> String? {
-        if let lastSubtitle = session.lastSubtitle,
-           !isWaiting(lastSubtitle),
-           !lastSubtitle.lowercased().contains("completed") {
-            return lastSubtitle
-        }
-        return session.sessionId.map { "session \($0.prefix(8))" }
-    }
-
-    private func loadCmuxWorkstreamIndex() -> CmuxWorkstreamIndex {
-        var index = CmuxWorkstreamIndex()
-        let path = "\(home)/.cmuxterm/workstream.jsonl"
-        guard let data = fileManager.contents(atPath: path),
-              let text = String(data: data, encoding: .utf8) else {
-            return index
-        }
-
-        let decoder = JSONDecoder()
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let lineData = String(line).data(using: .utf8),
-                  let raw = try? decoder.decode(CmuxWorkstreamRawItem.self, from: lineData),
-                  let kind = agentKind(raw.source),
-                  let workstreamId = raw.workstreamId,
-                  let eventKind = raw.kind else {
-                continue
-            }
-            let item = CmuxWorkstreamItem(
-                kind: kind,
-                workstreamId: workstreamId,
-                sessionId: normalizedSessionId(workstreamId: workstreamId, source: raw.source),
-                eventKind: eventKind,
-                pid: raw.ppid,
-                cwd: raw.cwd,
-                title: raw.title,
-                text: raw.payload?.userPrompt?.text,
-                toolName: raw.payload?.toolUse?.toolName ?? raw.payload?.toolResult?.toolName,
-                createdAt: parseISODate(raw.createdAt),
-                updatedAt: parseISODate(raw.updatedAt)
-            )
-            index.add(item)
-        }
-        return index
-    }
-
-    private func normalizedSessionId(workstreamId: String, source: String?) -> String? {
-        guard !workstreamId.isEmpty else {
-            return nil
-        }
-        if let source, workstreamId.hasPrefix("\(source)-") {
-            return String(workstreamId.dropFirst(source.count + 1))
-        }
-        return workstreamId
-    }
-
-    private func agentKind(_ raw: String?) -> AgentKind? {
-        switch raw?.lowercased() {
-        case "codex":
-            return .codex
-        case "claude", "claude-code", "claude code":
-            return .claude
-        default:
-            return nil
-        }
-    }
-
     private func sqlEscape(_ value: String) -> String {
         value.replacingOccurrences(of: "'", with: "''")
     }
@@ -1026,25 +519,11 @@ final class AgentScanner {
         return Date(timeIntervalSince1970: Double(raw) / 1_000_000_000)
     }
 
-    private func dateFromSeconds(_ value: Double?) -> Date? {
+    private func dateFromMilliseconds(_ value: Double?) -> Date? {
         guard let value, value > 0 else {
             return nil
         }
-        return Date(timeIntervalSince1970: value)
-    }
-
-    private func parseISODate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else {
-            return nil
-        }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) {
-            return date
-        }
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: value)
+        return Date(timeIntervalSince1970: value / 1000)
     }
 
     private func int64(_ value: String?) -> Int64? {
@@ -1065,10 +544,6 @@ final class AgentScanner {
         return Date().timeIntervalSince(date) <= seconds
     }
 
-    private func compareDates(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {
-        compareOptionalDates(lhs, rhs)
-    }
-
     private func makeSummary(_ clients: [AgentClient]) -> AgentSummary {
         AgentSummary(
             total: clients.count,
@@ -1080,110 +555,6 @@ final class AgentScanner {
             stale: clients.filter { $0.state == .stale }.count,
             unknown: clients.filter { $0.state == .unknown }.count
         )
-    }
-}
-
-private struct CmuxAppSession: Decodable {
-    let windows: [Window]
-
-    struct Window: Decodable {
-        let tabManager: TabManager?
-    }
-
-    struct TabManager: Decodable {
-        let workspaces: [Workspace]
-    }
-
-    struct Workspace: Decodable {
-        let currentDirectory: String?
-        let customTitle: String?
-        let processTitle: String?
-        let panels: [Panel]
-    }
-
-    struct Panel: Decodable {
-        let id: String
-        let type: String?
-        let directory: String?
-        let title: String?
-        let customTitle: String?
-        let ttyName: String?
-        let terminal: Terminal?
-        let notifications: [Notification]?
-    }
-
-    struct Terminal: Decodable {
-        let workingDirectory: String?
-        let agent: Agent?
-        let resumeBinding: ResumeBinding?
-    }
-
-    struct Agent: Decodable {
-        let kind: String?
-        let sessionId: String?
-    }
-
-    struct ResumeBinding: Decodable {
-        let kind: String?
-        let checkpointId: String?
-    }
-
-    struct Notification: Decodable {
-        let title: String?
-        let subtitle: String?
-        let body: String?
-        let createdAt: Double?
-        let isRead: Bool?
-    }
-}
-
-private struct CmuxHookSessionFile: Decodable {
-    let sessions: [String: Session]
-
-    struct Session: Decodable {
-        let agentLifecycle: String?
-        let cwd: String?
-        let lifecycle: String?
-        let status: String?
-        let lastBody: String?
-        let lastSubtitle: String?
-        let pid: Int?
-        let sessionId: String?
-        let startedAt: Double?
-        let surfaceId: String?
-        let updatedAt: Double?
-        let workspaceId: String?
-        let isRestorable: Bool?
-    }
-}
-
-private struct CmuxWorkstreamRawItem: Decodable {
-    let workstreamId: String?
-    let source: String?
-    let kind: String?
-    let ppid: Int?
-    let cwd: String?
-    let title: String?
-    let createdAt: String?
-    let updatedAt: String?
-    let payload: Payload?
-
-    struct Payload: Decodable {
-        let userPrompt: UserPrompt?
-        let toolUse: ToolUse?
-        let toolResult: ToolResult?
-    }
-
-    struct UserPrompt: Decodable {
-        let text: String?
-    }
-
-    struct ToolUse: Decodable {
-        let toolName: String?
-    }
-
-    struct ToolResult: Decodable {
-        let toolName: String?
     }
 }
 

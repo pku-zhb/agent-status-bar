@@ -75,7 +75,7 @@ final class MenuBarController: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         if lastSnapshot.clients.isEmpty {
-            menu.addItem(disabled("cmux 里没有检测到 Codex / Claude Code"))
+            menu.addItem(disabled("没有检测到 Codex / Claude Code 进程"))
         } else {
             addSection(title: "需要处理", clients: clients(in: .waitingApproval), emptyText: "无", to: menu)
             addSection(title: "运行中", clients: clients(in: .running), emptyText: "无", to: menu)
