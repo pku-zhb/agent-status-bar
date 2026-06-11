@@ -66,9 +66,6 @@ final class AgentNotificationController: NSObject {
         content.title = title
         content.sound = .default
         content.threadIdentifier = "agent-status-bar.\(kind).\(client.id)"
-        if let attachment = notificationIconAttachment() {
-            content.attachments = [attachment]
-        }
 
         let request = UNNotificationRequest(
             identifier: "agent-status-bar.\(kind).\(client.id).\(UUID().uuidString)",
@@ -83,13 +80,6 @@ final class AgentNotificationController: NSObject {
                 logger.info("Notification accepted kind=\(kind, privacy: .public)")
             }
         }
-    }
-
-    private func notificationIconAttachment() -> UNNotificationAttachment? {
-        guard let iconURL = Bundle.main.url(forResource: "NotificationIcon", withExtension: "png") else {
-            return nil
-        }
-        return try? UNNotificationAttachment(identifier: "agent-status-bar-icon", url: iconURL)
     }
 }
 

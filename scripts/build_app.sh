@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/AgentStatusBar.app"
 BIN="$ROOT/.build/release/AgentStatusBar"
-APP_VERSION="${APP_VERSION:-0.1.10}"
-BUILD_VERSION="${BUILD_VERSION:-11}"
+APP_VERSION="${APP_VERSION:-0.1.11}"
+BUILD_VERSION="${BUILD_VERSION:-12}"
 
 cd "$ROOT"
 swift build -c release
@@ -16,7 +16,6 @@ cp "$BIN" "$APP/Contents/MacOS/AgentStatusBar"
 cp "$ROOT/Assets/claude.png" "$APP/Contents/Resources/claude.png"
 cp "$ROOT/Assets/codex.png" "$APP/Contents/Resources/codex.png"
 cp "$ROOT/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-cp "$ROOT/Assets/NotificationIcon.png" "$APP/Contents/Resources/NotificationIcon.png"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
