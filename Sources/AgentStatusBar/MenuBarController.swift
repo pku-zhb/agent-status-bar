@@ -5,6 +5,7 @@ import Foundation
 final class MenuBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let scanner = AgentScanner()
+    private let notificationController = AgentNotificationController()
     private let creditRefreshQueue = DispatchQueue(label: "AgentStatusBar.CreditRefresh", qos: .utility)
     private let home = NSHomeDirectory()
     private var scanTimer: Timer?
@@ -12,6 +13,7 @@ final class MenuBarController: NSObject {
     private var lastCredits = AgentCreditSnapshot.empty
     private var creditRefreshInFlight = false
     private var nextCreditRefreshAt = Date.distantPast
+    private var hasScannedAgents = false
 
     override init() {
         super.init()
@@ -34,7 +36,15 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func refresh() {
-        lastSnapshot = scanner.scan()
+        let previousSnapshot = lastSnapshot
+        let snapshot = scanner.scan()
+        notificationController.handleTransition(
+            from: previousSnapshot,
+            to: snapshot,
+            isInitialSnapshot: !hasScannedAgents
+        )
+        hasScannedAgents = true
+        lastSnapshot = snapshot
         refreshCreditsIfNeeded()
         updateStatusIcon()
         rebuildMenu()
