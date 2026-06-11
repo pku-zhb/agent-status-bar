@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/AgentStatusBar.app"
 BIN="$ROOT/.build/release/AgentStatusBar"
-APP_VERSION="${APP_VERSION:-0.1.11}"
-BUILD_VERSION="${BUILD_VERSION:-12}"
+APP_VERSION="${APP_VERSION:-0.1.12}"
+BUILD_VERSION="${BUILD_VERSION:-13}"
 
 cd "$ROOT"
 swift build -c release
@@ -25,7 +25,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>AgentStatusBar</string>
   <key>CFBundleIdentifier</key>
-  <string>com.zhuhuibin.AgentStatusBar</string>
+  <string>com.zhuhuibin.agentstatusbar</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleName</key>
