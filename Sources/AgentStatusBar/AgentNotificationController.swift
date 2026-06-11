@@ -5,7 +5,7 @@ import UserNotifications
 @MainActor
 final class AgentNotificationController: NSObject {
     private let center = UNUserNotificationCenter.current()
-    private let logger = Logger(subsystem: "com.zhuhuibin.agentstatusbar", category: "notifications")
+    private let logger = Logger(subsystem: "com.zhuhuibin.AgentStatusBar", category: "notifications")
     private var clientStates: [String: ClientNotificationState] = [:]
 
     override init() {
