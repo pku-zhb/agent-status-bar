@@ -22,10 +22,10 @@ one detected session, with stable ordering by session pid.
 
 The app sends macOS notifications on the same state transitions shown by the
 menu bar lights. A live session changing from green to white / gray sends a
-title-only completion notification, and a session changing from non-red to red
-sends a title-only attention notification. Multiple sessions notify separately
-instead of being combined into one summary. The initial scan at launch is ignored
-so existing states do not trigger stale alerts.
+title-only "completed this turn" notification, and a session changing from
+non-red to red sends a title-only attention notification. Multiple sessions
+notify separately instead of being combined into one summary. The initial scan at
+launch is ignored so existing states do not trigger stale alerts.
 
 Codex turn state prefers the `needs_follow_up=true/false` lifecycle signal from
 local Codex logs. Tool-call and tool-result activity remains active while

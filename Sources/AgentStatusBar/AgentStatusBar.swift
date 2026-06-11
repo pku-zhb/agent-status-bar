@@ -54,6 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: MenuBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        configureApplicationIcon()
         controller = MenuBarController()
+    }
+
+    private func configureApplicationIcon() {
+        guard let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+              let icon = NSImage(contentsOf: iconURL) else {
+            return
+        }
+        NSApplication.shared.applicationIconImage = icon
     }
 }

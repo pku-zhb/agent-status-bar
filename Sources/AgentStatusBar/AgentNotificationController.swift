@@ -27,7 +27,7 @@ final class AgentNotificationController: NSObject {
             let previousState = previousById[client.id]?.state ?? notificationState.lastObservedState
 
             if shouldNotifyIdle(client: client, previousState: previousState) {
-                sendNotification(kind: "became-idle", client: client, action: "已空闲")
+                sendNotification(kind: "became-idle", client: client, action: "完成本轮任务")
             }
             if shouldNotifyAttention(client: client, previousState: previousState) {
                 sendNotification(kind: "needs-attention", client: client, action: "需要处理")
