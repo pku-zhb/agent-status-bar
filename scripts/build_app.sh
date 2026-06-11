@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/AgentStatusBar.app"
 BIN="$ROOT/.build/release/AgentStatusBar"
-APP_VERSION="${APP_VERSION:-0.1.1}"
-BUILD_VERSION="${BUILD_VERSION:-2}"
+APP_VERSION="${APP_VERSION:-0.1.2}"
+BUILD_VERSION="${BUILD_VERSION:-3}"
 
 cd "$ROOT"
 swift build -c release
@@ -15,6 +15,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AgentStatusBar"
 cp "$ROOT/Assets/claude.png" "$APP/Contents/Resources/claude.png"
 cp "$ROOT/Assets/codex.png" "$APP/Contents/Resources/codex.png"
+cp "$ROOT/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -25,6 +26,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>AgentStatusBar</string>
   <key>CFBundleIdentifier</key>
   <string>com.zhuhuibin.AgentStatusBar</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>AgentStatusBar</string>
   <key>CFBundlePackageType</key>
