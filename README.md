@@ -20,10 +20,12 @@ one detected session, with stable ordering by session pid.
 - Red glowing ring: waiting for approval or user attention.
 - Gray dim: stale / not updated recently.
 
-The app sends macOS notifications when a live session changes from green to
-white (running to idle / stale) or when a session first turns red
-(waiting for approval or user attention). It suppresses notifications for the
-initial scan at launch so existing states do not trigger stale alerts.
+The app sends macOS notifications after stable state transitions: a live session
+must remain idle / stale for 20 seconds after running before the green-to-white
+completion notification is sent, and a red attention state must remain stable for
+2 seconds before alerting. Per-session notification cooldowns suppress repeated
+alerts from short state flaps. The initial scan at launch is also ignored so
+existing states do not trigger stale alerts.
 
 The drop-down menu keeps the same model in Chinese sections: needs attention,
 running, idle, and stale / unknown. Technical details such as pid and full cwd are

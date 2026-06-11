@@ -4,6 +4,10 @@ import UserNotifications
 @MainActor
 final class AgentNotificationController: NSObject {
     private let center = UNUserNotificationCenter.current()
+    private let idleSettleInterval: TimeInterval = 20
+    private let attentionSettleInterval: TimeInterval = 2
+    private let notificationCooldown: TimeInterval = 5 * 60
+    private var clientStates: [String: ClientNotificationState] = [:]
 
     override init() {
         super.init()
@@ -13,16 +17,40 @@ final class AgentNotificationController: NSObject {
 
     func handleTransition(from previous: AgentSnapshot, to current: AgentSnapshot, isInitialSnapshot: Bool) {
         guard !isInitialSnapshot else {
+            seedClientStates(from: current)
             return
         }
 
+        let now = Date()
         let previousById = Dictionary(uniqueKeysWithValues: previous.clients.map { ($0.id, $0) })
-        let needsAttention = current.clients.filter { client in
-            client.state == .waitingApproval && previousById[client.id]?.state != .waitingApproval
+        var needsAttention: [AgentClient] = []
+        var becameIdle: [AgentClient] = []
+
+        for client in current.clients {
+            var notificationState = clientStates[client.id] ?? ClientNotificationState()
+            let previousState = previousById[client.id]?.state ?? notificationState.lastObservedState
+
+            updateIdleNotificationState(
+                &notificationState,
+                client: client,
+                previousState: previousState,
+                now: now,
+                readyClients: &becameIdle
+            )
+            updateAttentionNotificationState(
+                &notificationState,
+                client: client,
+                previousState: previousState,
+                now: now,
+                readyClients: &needsAttention
+            )
+
+            notificationState.lastObservedState = client.state
+            clientStates[client.id] = notificationState
         }
-        let becameIdle = current.clients.filter { client in
-            previousById[client.id]?.state == .running && (client.state == .idle || client.state == .stale)
-        }
+
+        let currentIds = Set(current.clients.map(\.id))
+        clientStates = clientStates.filter { currentIds.contains($0.key) }
 
         if !needsAttention.isEmpty {
             sendNotification(
@@ -39,6 +67,74 @@ final class AgentNotificationController: NSObject {
                 body: body(for: becameIdle, fallback: "运行已结束，状态从绿色变为空闲。")
             )
         }
+    }
+
+    private func seedClientStates(from snapshot: AgentSnapshot) {
+        clientStates = Dictionary(uniqueKeysWithValues: snapshot.clients.map {
+            ($0.id, ClientNotificationState(lastObservedState: $0.state))
+        })
+    }
+
+    private func updateIdleNotificationState(
+        _ notificationState: inout ClientNotificationState,
+        client: AgentClient,
+        previousState: AgentState?,
+        now: Date,
+        readyClients: inout [AgentClient]
+    ) {
+        let isIdle = client.state == .idle || client.state == .stale
+        guard isIdle else {
+            notificationState.pendingIdleSince = nil
+            return
+        }
+
+        if previousState == .running && notificationState.pendingIdleSince == nil {
+            notificationState.pendingIdleSince = now
+        }
+
+        guard let pendingSince = notificationState.pendingIdleSince,
+              now.timeIntervalSince(pendingSince) >= idleSettleInterval,
+              canSend(lastSentAt: notificationState.lastIdleNotificationAt, now: now) else {
+            return
+        }
+
+        readyClients.append(client)
+        notificationState.pendingIdleSince = nil
+        notificationState.lastIdleNotificationAt = now
+    }
+
+    private func updateAttentionNotificationState(
+        _ notificationState: inout ClientNotificationState,
+        client: AgentClient,
+        previousState: AgentState?,
+        now: Date,
+        readyClients: inout [AgentClient]
+    ) {
+        guard client.state == .waitingApproval else {
+            notificationState.pendingAttentionSince = nil
+            return
+        }
+
+        if previousState != .waitingApproval && notificationState.pendingAttentionSince == nil {
+            notificationState.pendingAttentionSince = now
+        }
+
+        guard let pendingSince = notificationState.pendingAttentionSince,
+              now.timeIntervalSince(pendingSince) >= attentionSettleInterval,
+              canSend(lastSentAt: notificationState.lastAttentionNotificationAt, now: now) else {
+            return
+        }
+
+        readyClients.append(client)
+        notificationState.pendingAttentionSince = nil
+        notificationState.lastAttentionNotificationAt = now
+    }
+
+    private func canSend(lastSentAt: Date?, now: Date) -> Bool {
+        guard let lastSentAt else {
+            return true
+        }
+        return now.timeIntervalSince(lastSentAt) >= notificationCooldown
     }
 
     private func requestAuthorization() {
@@ -86,6 +182,14 @@ final class AgentNotificationController: NSObject {
         }
         return "\(client.kind.displayName) \(client.pid)"
     }
+}
+
+private struct ClientNotificationState {
+    var lastObservedState: AgentState?
+    var pendingIdleSince: Date?
+    var pendingAttentionSince: Date?
+    var lastIdleNotificationAt: Date?
+    var lastAttentionNotificationAt: Date?
 }
 
 extension AgentNotificationController: UNUserNotificationCenterDelegate {
