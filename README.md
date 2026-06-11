@@ -28,10 +28,12 @@ alerts from short state flaps. The initial scan at launch is also ignored so
 existing states do not trigger stale alerts.
 
 Codex turn state prefers the `needs_follow_up=true/false` lifecycle signal from
-local Codex logs. Tool-call and tool-result activity remains active while
-pending. If those lifecycle signals are missing, recent turn activity is treated
-as active for 90 seconds so older log formats do not immediately flip the light
-back to idle during quiet model/tool gaps.
+local Codex logs. The scanner also exposes the latest completed Codex `turn.id`,
+and notifications use that completion event directly so a new user turn cannot
+cancel the previous turn's completion alert. Tool-call and tool-result activity
+remains active while pending. If those lifecycle signals are missing, recent turn
+activity is treated as active for 90 seconds so older log formats do not
+immediately flip the light back to idle during quiet model/tool gaps.
 
 The drop-down menu keeps the same model in Chinese sections: needs attention,
 running, idle, and stale / unknown. Technical details such as pid and full cwd are
