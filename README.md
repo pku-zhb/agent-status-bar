@@ -27,6 +27,10 @@ completion notification is sent, and a red attention state must remain stable fo
 alerts from short state flaps. The initial scan at launch is also ignored so
 existing states do not trigger stale alerts.
 
+Codex turn, tool-call, and tool-result activity is treated as active for 90
+seconds, so quiet gaps while the model is thinking or processing tool output do
+not immediately flip the light back to idle.
+
 The drop-down menu keeps the same model in Chinese sections: needs attention,
 running, idle, and stale / unknown. Technical details such as pid and full cwd are
 kept out of the main view; use "复制 JSON 快照" when debugging is needed.

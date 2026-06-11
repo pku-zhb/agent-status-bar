@@ -40,6 +40,7 @@ final class AgentScanner {
     private let fileManager = FileManager.default
     private let sqlitePath = "/usr/bin/sqlite3"
     private let claudeBusyFreshness: TimeInterval = 5 * 60
+    private let codexTurnActivityFreshness: TimeInterval = 90
 
     init(home: String = NSHomeDirectory()) {
         self.home = home
@@ -388,7 +389,7 @@ final class AgentScanner {
           COALESCE(MAX(CASE WHEN target = 'codex_core::stream_events_utils' AND (feedback_log_body LIKE '%:handle_output_item_done: ToolCall: request_user_input {%' OR feedback_log_body LIKE '%:handle_output_item_done: ToolCall: ask_question {%' OR feedback_log_body LIKE '%:handle_output_item_done: ToolCall: askquestion {%') THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_otel.trace_safe' AND feedback_log_body LIKE '%event.name="codex.tool_result"%' AND (feedback_log_body LIKE '%tool_name=request_user_input%' OR feedback_log_body LIKE '%tool_name=ask_question%' OR feedback_log_body LIKE '%tool_name=askquestion%') THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_core::session' AND feedback_log_body LIKE 'session_loop%interrupt received: abort current task%' THEN ts * 1000000000 + ts_nanos END), 0),
-          COALESCE(MAX(CASE WHEN target = 'codex_otel.trace_safe' AND (feedback_log_body LIKE '%otel.name="session_task.turn"%' OR feedback_log_body LIKE '%codex.op="user_input_with_turn_context"%' OR feedback_log_body LIKE '%run_sampling_request%') THEN ts * 1000000000 + ts_nanos END), 0),
+          COALESCE(MAX(CASE WHEN (target = 'codex_otel.trace_safe' AND (feedback_log_body LIKE '%otel.name="session_task.turn"%' OR feedback_log_body LIKE '%codex.op="user_input_with_turn_context"%' OR feedback_log_body LIKE '%run_sampling_request%' OR feedback_log_body LIKE '%event.name="codex.tool_result"%')) OR (target = 'codex_core::stream_events_utils' AND feedback_log_body LIKE '%:handle_output_item_done: ToolCall:%') THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_core::stream_events_utils' AND feedback_log_body LIKE '%:handle_output_item_done: ToolCall:%' THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_otel.trace_safe' AND feedback_log_body LIKE '%event.name="codex.tool_result"%' THEN ts * 1000000000 + ts_nanos END), 0)
         FROM logs
@@ -421,7 +422,7 @@ final class AgentScanner {
         let waitingNs = questionPending ? question : (approvalPending ? escalated : 0)
         let waitingSince = dateFromNanoseconds(String(waitingNs))
         let isWaitingForQuestion = questionPending && (questionWaitingSince != nil)
-        let hasRecentTurnActivity = turnActivity.map { Date().timeIntervalSince($0) <= 12 } ?? false
+        let hasRecentTurnActivity = turnActivity.map { Date().timeIntervalSince($0) <= codexTurnActivityFreshness } ?? false
         let toolCallWaitingSince = dateFromNanoseconds(String(toolCall))
         let toolCallIsRecent = toolCallWaitingSince.map { Date().timeIntervalSince($0) <= 30 * 60 } ?? false
         let toolCallPending = toolCall > anyToolResult && toolCallIsRecent
