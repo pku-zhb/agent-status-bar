@@ -57,14 +57,13 @@ final class AgentNotificationController: NSObject {
     }
 
     private func requestAuthorization() {
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        center.requestAuthorization(options: [.alert]) { _, _ in }
     }
 
     private func sendNotification(kind: String, client: AgentClient, action: String) {
         let title = "\(client.kind.displayName) \(action)"
         let content = UNMutableNotificationContent()
         content.title = title
-        content.sound = .default
         content.threadIdentifier = "agent-status-bar.\(kind).\(client.id)"
 
         let request = UNNotificationRequest(
@@ -93,6 +92,6 @@ extension AgentNotificationController: UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound])
+        completionHandler([.banner, .list])
     }
 }
