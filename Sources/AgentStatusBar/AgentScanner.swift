@@ -21,8 +21,6 @@ struct CodexRuntimeInfo {
     let detail: String?
     let lastSeenAt: Date?
     let waitingSince: Date?
-    let completedTurnId: String?
-    let completedAt: Date?
 }
 
 struct ClaudeSessionInfo: Decodable {
@@ -35,11 +33,6 @@ struct ClaudeSessionInfo: Decodable {
     let name: String?
     let kind: String?
     let entrypoint: String?
-}
-
-private struct CodexCompletedTurn {
-    let id: String
-    let completedAt: Date
 }
 
 final class AgentScanner {
@@ -202,9 +195,7 @@ final class AgentScanner {
             title: thread?.title ?? processTitle(kind: .codex, process: process),
             detail: runtime.detail ?? detailText(source: "process", state: state),
             lastSeenAt: newestDate(runtime.lastSeenAt, thread?.updatedAt),
-            waitingSince: state == .waitingApproval ? runtime.waitingSince : nil,
-            completedTurnId: runtime.completedTurnId,
-            completedAt: runtime.completedAt
+            waitingSince: state == .waitingApproval ? runtime.waitingSince : nil
         )
     }
 
@@ -231,9 +222,7 @@ final class AgentScanner {
             title: claudeTitle(session: session, process: process),
             detail: claudeDetail(session: session, state: state),
             lastSeenAt: sessionUpdatedAt,
-            waitingSince: state == .waitingApproval ? sessionUpdatedAt : nil,
-            completedTurnId: nil,
-            completedAt: nil
+            waitingSince: state == .waitingApproval ? sessionUpdatedAt : nil
         )
     }
 
@@ -390,9 +379,7 @@ final class AgentScanner {
                 threadId: nil,
                 detail: nil,
                 lastSeenAt: nil,
-                waitingSince: nil,
-                completedTurnId: nil,
-                completedAt: nil
+                waitingSince: nil
             )
         }
 
@@ -435,7 +422,6 @@ final class AgentScanner {
         let turnFinished = int64(metrics[safe: 13]) ?? 0
 
         let threadId = latestCodexThreadId(pid: pid, db: db)
-        let completedTurn = latestCodexCompletedTurn(pid: pid, db: db)
         let state: AgentState
         let approvalResolvedNs = max(max(approval, toolResult), interrupt)
         let questionResolvedNs = max(questionResult, interrupt)
@@ -497,36 +483,8 @@ final class AgentScanner {
             threadId: threadId,
             detail: detail,
             lastSeenAt: lastSeen,
-            waitingSince: state == .waitingApproval ? waitingSince : nil,
-            completedTurnId: completedTurn?.id,
-            completedAt: completedTurn?.completedAt
+            waitingSince: state == .waitingApproval ? waitingSince : nil
         )
-    }
-
-    private func latestCodexCompletedTurn(pid: Int, db: String) -> CodexCompletedTurn? {
-        let like = "pid:\(pid):%"
-        let query = """
-        SELECT ts * 1000000000 + ts_nanos, feedback_log_body
-        FROM logs
-        WHERE process_uuid LIKE '\(sqlEscape(like))'
-          AND target = 'codex_core::session::turn'
-          AND feedback_log_body LIKE '%:run_turn: post sampling token usage%'
-          AND feedback_log_body LIKE '% needs_follow_up=false%'
-        ORDER BY ts DESC, ts_nanos DESC, id DESC
-        LIMIT 1;
-        """
-        guard let row = sqliteRows(db: db, query: query).first,
-              let completedAt = dateFromNanoseconds(row[safe: 0]) else {
-            return nil
-        }
-
-        let body = row[safe: 1] ?? ""
-        let turnId = tokenValue(after: "turn_id=", in: body)
-            ?? tokenValue(after: "turn.id=", in: body)
-            ?? row[safe: 0]
-            ?? "\(pid)-\(Int(completedAt.timeIntervalSince1970))"
-
-        return CodexCompletedTurn(id: turnId, completedAt: completedAt)
     }
 
     private func latestCodexThreadId(pid: Int, db: String) -> String? {
@@ -608,20 +566,6 @@ final class AgentScanner {
 
     private func newestDate(_ dates: Date?...) -> Date? {
         dates.compactMap { $0 }.max()
-    }
-
-    private func tokenValue(after marker: String, in text: String) -> String? {
-        guard let range = text.range(of: marker) else {
-            return nil
-        }
-
-        let rest = text[range.upperBound...]
-        let end = rest.firstIndex { character in
-            character == " " || character == "}" || character == "," || character == ":"
-        } ?? rest.endIndex
-
-        let token = rest[..<end].trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        return token.isEmpty ? nil : token
     }
 
     private func isRecent(_ date: Date?, within seconds: TimeInterval) -> Bool {

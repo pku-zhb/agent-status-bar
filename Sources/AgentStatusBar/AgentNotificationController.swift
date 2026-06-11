@@ -6,8 +6,7 @@ import UserNotifications
 final class AgentNotificationController: NSObject {
     private let center = UNUserNotificationCenter.current()
     private let logger = Logger(subsystem: "com.zhuhuibin.AgentStatusBar", category: "notifications")
-    private let idleSettleInterval: TimeInterval = 20
-    private let completionSettleInterval: TimeInterval = 20
+    private let idleSettleInterval: TimeInterval = 2
     private let attentionSettleInterval: TimeInterval = 2
     private let notificationCooldown: TimeInterval = 5 * 60
     private var clientStates: [String: ClientNotificationState] = [:]
@@ -40,12 +39,6 @@ final class AgentNotificationController: NSObject {
                 now: now,
                 readyClients: &becameIdle
             )
-            updateCompletionNotificationState(
-                &notificationState,
-                client: client,
-                now: now,
-                readyClients: &becameIdle
-            )
             updateAttentionNotificationState(
                 &notificationState,
                 client: client,
@@ -55,7 +48,6 @@ final class AgentNotificationController: NSObject {
             )
 
             notificationState.lastObservedState = client.state
-            notificationState.lastObservedCompletionId = client.completedTurnId
             clientStates[client.id] = notificationState
         }
 
@@ -81,7 +73,7 @@ final class AgentNotificationController: NSObject {
 
     private func seedClientStates(from snapshot: AgentSnapshot) {
         clientStates = Dictionary(uniqueKeysWithValues: snapshot.clients.map {
-            ($0.id, ClientNotificationState(lastObservedState: $0.state, lastObservedCompletionId: $0.completedTurnId))
+            ($0.id, ClientNotificationState(lastObservedState: $0.state))
         })
     }
 
@@ -92,10 +84,6 @@ final class AgentNotificationController: NSObject {
         now: Date,
         readyClients: inout [AgentClient]
     ) {
-        if client.kind == .codex && client.completedTurnId != nil {
-            return
-        }
-
         let isIdle = client.state == .idle || client.state == .stale
         guard isIdle else {
             notificationState.pendingIdleSince = nil
@@ -114,40 +102,6 @@ final class AgentNotificationController: NSObject {
 
         readyClients.append(client)
         notificationState.pendingIdleSince = nil
-        notificationState.lastIdleNotificationAt = now
-    }
-
-    private func updateCompletionNotificationState(
-        _ notificationState: inout ClientNotificationState,
-        client: AgentClient,
-        now: Date,
-        readyClients: inout [AgentClient]
-    ) {
-        guard client.kind == .codex,
-              let completedTurnId = client.completedTurnId,
-              client.completedAt != nil else {
-            notificationState.pendingCompletion = nil
-            return
-        }
-
-        if completedTurnId != notificationState.lastObservedCompletionId,
-           notificationState.pendingCompletion?.turnId != completedTurnId {
-            notificationState.pendingCompletion = PendingCompletion(
-                turnId: completedTurnId,
-                since: now,
-                client: client
-            )
-        }
-
-        guard let pending = notificationState.pendingCompletion,
-              pending.turnId == completedTurnId,
-              now.timeIntervalSince(pending.since) >= completionSettleInterval,
-              canSend(lastSentAt: notificationState.lastIdleNotificationAt, now: now) else {
-            return
-        }
-
-        readyClients.append(pending.client)
-        notificationState.pendingCompletion = nil
         notificationState.lastIdleNotificationAt = now
     }
 
@@ -241,18 +195,10 @@ final class AgentNotificationController: NSObject {
 
 private struct ClientNotificationState {
     var lastObservedState: AgentState?
-    var lastObservedCompletionId: String?
     var pendingIdleSince: Date?
-    var pendingCompletion: PendingCompletion?
     var pendingAttentionSince: Date?
     var lastIdleNotificationAt: Date?
     var lastAttentionNotificationAt: Date?
-}
-
-private struct PendingCompletion {
-    let turnId: String
-    let since: Date
-    let client: AgentClient
 }
 
 extension AgentNotificationController: UNUserNotificationCenterDelegate {

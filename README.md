@@ -21,19 +21,19 @@ one detected session, with stable ordering by session pid.
 - Gray dim: stale / not updated recently.
 
 The app sends macOS notifications after stable state transitions: a live session
-must remain idle / stale for 20 seconds after running before the green-to-white
+must remain idle / stale for 2 seconds after running before the green-to-white
 completion notification is sent, and a red attention state must remain stable for
 2 seconds before alerting. Per-session notification cooldowns suppress repeated
 alerts from short state flaps. The initial scan at launch is also ignored so
 existing states do not trigger stale alerts.
 
 Codex turn state prefers the `needs_follow_up=true/false` lifecycle signal from
-local Codex logs. The scanner also exposes the latest completed Codex `turn.id`,
-and notifications use that completion event directly so a new user turn cannot
-cancel the previous turn's completion alert. Tool-call and tool-result activity
-remains active while pending. If those lifecycle signals are missing, recent turn
-activity is treated as active for 90 seconds so older log formats do not
-immediately flip the light back to idle during quiet model/tool gaps.
+local Codex logs. Tool-call and tool-result activity remains active while
+pending. If those lifecycle signals are missing, recent turn activity is treated
+as active for 90 seconds so older log formats do not immediately flip the light
+back to idle during quiet model/tool gaps. Notifications use the same final
+client state as the menu bar lights; completion log events do not bypass the
+running / idle state machine.
 
 The drop-down menu keeps the same model in Chinese sections: needs attention,
 running, idle, and stale / unknown. Technical details such as pid and full cwd are

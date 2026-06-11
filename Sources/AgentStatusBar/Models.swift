@@ -64,8 +64,6 @@ struct AgentClient: Codable, Identifiable {
     let detail: String?
     let lastSeenAt: Date?
     let waitingSince: Date?
-    let completedTurnId: String?
-    let completedAt: Date?
 }
 
 struct AgentSummary: Codable {
