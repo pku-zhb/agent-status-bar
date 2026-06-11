@@ -391,7 +391,9 @@ final class AgentScanner {
           COALESCE(MAX(CASE WHEN target = 'codex_core::session' AND feedback_log_body LIKE 'session_loop%interrupt received: abort current task%' THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN (target = 'codex_otel.trace_safe' AND (feedback_log_body LIKE '%otel.name="session_task.turn"%' OR feedback_log_body LIKE '%codex.op="user_input_with_turn_context"%' OR feedback_log_body LIKE '%run_sampling_request%' OR feedback_log_body LIKE '%event.name="codex.tool_result"%')) OR (target = 'codex_core::stream_events_utils' AND feedback_log_body LIKE '%:handle_output_item_done: ToolCall:%') THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_core::stream_events_utils' AND feedback_log_body LIKE '%:handle_output_item_done: ToolCall:%' THEN ts * 1000000000 + ts_nanos END), 0),
-          COALESCE(MAX(CASE WHEN target = 'codex_otel.trace_safe' AND feedback_log_body LIKE '%event.name="codex.tool_result"%' THEN ts * 1000000000 + ts_nanos END), 0)
+          COALESCE(MAX(CASE WHEN target = 'codex_otel.trace_safe' AND feedback_log_body LIKE '%event.name="codex.tool_result"%' THEN ts * 1000000000 + ts_nanos END), 0),
+          COALESCE(MAX(CASE WHEN target = 'codex_core::session::turn' AND feedback_log_body LIKE '%:run_turn: post sampling token usage%' AND feedback_log_body LIKE '% needs_follow_up=true%' THEN ts * 1000000000 + ts_nanos END), 0),
+          COALESCE(MAX(CASE WHEN target = 'codex_core::session::turn' AND feedback_log_body LIKE '%:run_turn: post sampling token usage%' AND feedback_log_body LIKE '% needs_follow_up=false%' THEN ts * 1000000000 + ts_nanos END), 0)
         FROM logs
         WHERE process_uuid LIKE '\(sqlEscape(like))';
         """
@@ -406,9 +408,12 @@ final class AgentScanner {
         let question = int64(metrics[safe: 6]) ?? 0
         let questionResult = int64(metrics[safe: 7]) ?? 0
         let interrupt = int64(metrics[safe: 8]) ?? 0
+        let turnActivityNs = int64(metrics[safe: 9]) ?? 0
         let turnActivity = dateFromNanoseconds(metrics[safe: 9])
         let toolCall = int64(metrics[safe: 10]) ?? 0
         let anyToolResult = int64(metrics[safe: 11]) ?? 0
+        let turnNeedsFollowUp = int64(metrics[safe: 12]) ?? 0
+        let turnFinished = int64(metrics[safe: 13]) ?? 0
 
         let threadId = latestCodexThreadId(pid: pid, db: db)
         let state: AgentState
@@ -426,6 +431,12 @@ final class AgentScanner {
         let toolCallWaitingSince = dateFromNanoseconds(String(toolCall))
         let toolCallIsRecent = toolCallWaitingSince.map { Date().timeIntervalSince($0) <= 30 * 60 } ?? false
         let toolCallPending = toolCall > anyToolResult && toolCallIsRecent
+        let strictTurnResolved = max(turnFinished, interrupt)
+        let hasStrictTurnSignal = max(turnNeedsFollowUp, turnFinished) > 0
+        let strictTurnRunning = turnNeedsFollowUp > strictTurnResolved
+        let strictTurnFinished = hasStrictTurnSignal
+            && strictTurnResolved > turnNeedsFollowUp
+            && turnActivityNs <= strictTurnResolved
 
         if approvalPending || questionPending {
             state = .waitingApproval
@@ -433,6 +444,10 @@ final class AgentScanner {
             state = .running
         } else if toolCallPending {
             state = .running
+        } else if strictTurnRunning {
+            state = .running
+        } else if strictTurnFinished {
+            state = .idle
         } else if turnStart > turnEnd {
             state = .running
         } else if hasRecentTurnActivity {
@@ -448,7 +463,7 @@ final class AgentScanner {
         case .waitingApproval:
             detail = isWaitingForQuestion ? "等待用户回答" : "等待命令或补丁批准"
         case .running:
-            detail = toolCallPending ? "tool call pending" : "turn active"
+            detail = toolCallPending ? "tool call pending" : (strictTurnRunning ? "turn follow-up pending" : "turn active")
         case .idle:
             detail = "idle"
         case .stale:

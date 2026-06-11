@@ -27,9 +27,11 @@ completion notification is sent, and a red attention state must remain stable fo
 alerts from short state flaps. The initial scan at launch is also ignored so
 existing states do not trigger stale alerts.
 
-Codex turn, tool-call, and tool-result activity is treated as active for 90
-seconds, so quiet gaps while the model is thinking or processing tool output do
-not immediately flip the light back to idle.
+Codex turn state prefers the `needs_follow_up=true/false` lifecycle signal from
+local Codex logs. Tool-call and tool-result activity remains active while
+pending. If those lifecycle signals are missing, recent turn activity is treated
+as active for 90 seconds so older log formats do not immediately flip the light
+back to idle during quiet model/tool gaps.
 
 The drop-down menu keeps the same model in Chinese sections: needs attention,
 running, idle, and stale / unknown. Technical details such as pid and full cwd are
