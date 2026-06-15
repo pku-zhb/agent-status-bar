@@ -41,6 +41,8 @@ final class AgentScanner {
     private let sqlitePath = "/usr/bin/sqlite3"
     private let claudeBusyFreshness: TimeInterval = 5 * 60
     private let codexTurnActivityFreshness: TimeInterval = 90
+    private let codexThreadLookupWindowSeconds = 24 * 60 * 60
+    private let sqliteQueryTimeout: TimeInterval = 1
 
     init(home: String = NSHomeDirectory()) {
         self.home = home
@@ -55,7 +57,7 @@ final class AgentScanner {
             makeCodexClient(process: $0, processes: processes, processByPid: processByPid)
         }
         let claudeClients = processes
-            .filter { isTerminalProcess($0) && isClaude($0) }
+            .filter { isTerminalProcess($0) && isClaude($0) && !isClaudePrintMode($0) }
             .map {
                 makeClaudeClient(
                     process: $0,
@@ -129,6 +131,11 @@ final class AgentScanner {
             || process.args.contains("/bin/claude\t")
     }
 
+    private func isClaudePrintMode(_ process: ProcInfo) -> Bool {
+        let tokens = argumentTokens(process.args)
+        return tokens.contains("-p") || tokens.contains("--print")
+    }
+
     private func isCodexNative(_ process: ProcInfo) -> Bool {
         if executableName(process) == "codex" {
             return true
@@ -148,15 +155,50 @@ final class AgentScanner {
 
     private func codexProcesses(_ processes: [ProcInfo], processByPid: [Int: ProcInfo]) -> [ProcInfo] {
         let native = processes.filter {
-            isTerminalProcess($0) && isCodexNative($0)
+            isTerminalProcess($0)
+                && isCodexNative($0)
+                && !isCodexExecMode($0, processByPid: processByPid)
         }
         let nativeAncestorPids = Set(native.flatMap { ancestors(of: $0.pid, processByPid: processByPid) })
         let wrappers = processes.filter {
             isTerminalProcess($0)
                 && isCodexWrapper($0)
+                && !isCodexExecMode($0, processByPid: processByPid)
                 && !nativeAncestorPids.contains($0.pid)
         }
         return native + wrappers
+    }
+
+    private func isCodexExecMode(_ process: ProcInfo, processByPid: [Int: ProcInfo]) -> Bool {
+        if commandAfterExecutable(in: process.args, executableSuffix: "codex") == "exec" {
+            return true
+        }
+
+        var current = process.ppid
+        var seen = Set<Int>()
+        while let ancestor = processByPid[current], !seen.contains(current) {
+            seen.insert(current)
+            if commandAfterExecutable(in: ancestor.args, executableSuffix: "codex") == "exec" {
+                return true
+            }
+            current = ancestor.ppid
+        }
+        return false
+    }
+
+    private func commandAfterExecutable(in args: String, executableSuffix: String) -> String? {
+        let tokens = argumentTokens(args)
+        for (index, token) in tokens.enumerated() {
+            let executable = URL(fileURLWithPath: token).lastPathComponent
+            if executable == executableSuffix, index + 1 < tokens.count {
+                return tokens[index + 1]
+            }
+        }
+        return nil
+    }
+
+    private func argumentTokens(_ args: String) -> [String] {
+        args.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).map(String.init)
     }
 
     private func dedupe(_ clients: [AgentClient]) -> [AgentClient] {
@@ -385,7 +427,18 @@ final class AgentScanner {
 
         let like = "pid:\(pid):%"
         let metricsQuery = """
+        WITH latest_thread AS (
+          SELECT thread_id
+          FROM logs
+          WHERE ts >= strftime('%s','now') - \(codexThreadLookupWindowSeconds)
+            AND process_uuid LIKE '\(sqlEscape(like))'
+            AND thread_id IS NOT NULL
+            AND thread_id != ''
+          ORDER BY ts DESC, ts_nanos DESC, id DESC
+          LIMIT 1
+        )
         SELECT
+          (SELECT thread_id FROM latest_thread),
           COALESCE(MAX(ts * 1000000000 + ts_nanos), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_core::tasks' AND feedback_log_body LIKE 'codex_core::tasks: new%' AND feedback_log_body LIKE '%turn{%' THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_core::tasks' AND feedback_log_body LIKE 'codex_core::tasks: close time.busy=%' AND feedback_log_body LIKE '%turn{%' THEN ts * 1000000000 + ts_nanos END), 0),
@@ -401,27 +454,26 @@ final class AgentScanner {
           COALESCE(MAX(CASE WHEN target = 'codex_core::session::turn' AND feedback_log_body LIKE '%:run_turn: post sampling token usage%' AND feedback_log_body LIKE '% needs_follow_up=true%' THEN ts * 1000000000 + ts_nanos END), 0),
           COALESCE(MAX(CASE WHEN target = 'codex_core::session::turn' AND feedback_log_body LIKE '%:run_turn: post sampling token usage%' AND feedback_log_body LIKE '% needs_follow_up=false%' THEN ts * 1000000000 + ts_nanos END), 0)
         FROM logs
-        WHERE process_uuid LIKE '\(sqlEscape(like))';
+        WHERE thread_id = (SELECT thread_id FROM latest_thread);
         """
 
         let metrics = sqliteRows(db: db, query: metricsQuery).first ?? []
-        let lastSeen = dateFromNanoseconds(metrics[safe: 0])
-        let turnStart = int64(metrics[safe: 1]) ?? 0
-        let turnEnd = int64(metrics[safe: 2]) ?? 0
-        let escalated = int64(metrics[safe: 3]) ?? 0
-        let approval = int64(metrics[safe: 4]) ?? 0
-        let toolResult = int64(metrics[safe: 5]) ?? 0
-        let question = int64(metrics[safe: 6]) ?? 0
-        let questionResult = int64(metrics[safe: 7]) ?? 0
-        let interrupt = int64(metrics[safe: 8]) ?? 0
-        let turnActivityNs = int64(metrics[safe: 9]) ?? 0
-        let turnActivity = dateFromNanoseconds(metrics[safe: 9])
-        let toolCall = int64(metrics[safe: 10]) ?? 0
-        let anyToolResult = int64(metrics[safe: 11]) ?? 0
-        let turnNeedsFollowUp = int64(metrics[safe: 12]) ?? 0
-        let turnFinished = int64(metrics[safe: 13]) ?? 0
-
-        let threadId = latestCodexThreadId(pid: pid, db: db)
+        let threadId = metrics[safe: 0]?.nilIfEmpty
+        let lastSeen = dateFromNanoseconds(metrics[safe: 1])
+        let turnStart = int64(metrics[safe: 2]) ?? 0
+        let turnEnd = int64(metrics[safe: 3]) ?? 0
+        let escalated = int64(metrics[safe: 4]) ?? 0
+        let approval = int64(metrics[safe: 5]) ?? 0
+        let toolResult = int64(metrics[safe: 6]) ?? 0
+        let question = int64(metrics[safe: 7]) ?? 0
+        let questionResult = int64(metrics[safe: 8]) ?? 0
+        let interrupt = int64(metrics[safe: 9]) ?? 0
+        let turnActivityNs = int64(metrics[safe: 10]) ?? 0
+        let turnActivity = dateFromNanoseconds(metrics[safe: 10])
+        let toolCall = int64(metrics[safe: 11]) ?? 0
+        let anyToolResult = int64(metrics[safe: 12]) ?? 0
+        let turnNeedsFollowUp = int64(metrics[safe: 13]) ?? 0
+        let turnFinished = int64(metrics[safe: 14]) ?? 0
         let state: AgentState
         let approvalResolvedNs = max(max(approval, toolResult), interrupt)
         let questionResolvedNs = max(questionResult, interrupt)
@@ -487,20 +539,6 @@ final class AgentScanner {
         )
     }
 
-    private func latestCodexThreadId(pid: Int, db: String) -> String? {
-        let like = "pid:\(pid):%"
-        let query = """
-        SELECT thread_id
-        FROM logs
-        WHERE process_uuid LIKE '\(sqlEscape(like))'
-          AND thread_id IS NOT NULL
-          AND thread_id != ''
-        ORDER BY ts DESC, ts_nanos DESC, id DESC
-        LIMIT 1;
-        """
-        return sqliteRows(db: db, query: query).first?.first?.nilIfEmpty
-    }
-
     private func codexThreadInfo(threadId: String) -> CodexThreadInfo? {
         let db = "\(home)/.codex/state_5.sqlite"
         guard fileManager.fileExists(atPath: db) else {
@@ -526,7 +564,7 @@ final class AgentScanner {
 
     private func sqliteRows(db: String, query: String) -> [[String]] {
         guard fileManager.fileExists(atPath: db),
-              let result = ProcessRunner.run(sqlitePath, ["-batch", "-separator", "\t", db, query], timeout: 3),
+              let result = ProcessRunner.run(sqlitePath, ["-batch", "-separator", "\t", db, query], timeout: sqliteQueryTimeout),
               result.exitCode == 0 else {
             return []
         }

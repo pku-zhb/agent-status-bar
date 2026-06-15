@@ -4,13 +4,18 @@ import Foundation
 @MainActor
 final class MenuBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let scanner = AgentScanner()
     private let notificationController = AgentNotificationController()
+    private let scanQueue = DispatchQueue(label: "AgentStatusBar.AgentScan", qos: .utility)
     private let creditRefreshQueue = DispatchQueue(label: "AgentStatusBar.CreditRefresh", qos: .utility)
     private let home = NSHomeDirectory()
+    private let scanInterval: TimeInterval = 5
+    private let creditRefreshInterval: TimeInterval = 5 * 60
+    private let creditRetryInterval: TimeInterval = 60
     private var scanTimer: Timer?
     private var lastSnapshot = AgentSnapshot.empty
     private var lastCredits = AgentCreditSnapshot.empty
+    private var scanInFlight = false
+    private var forceCreditRefreshAfterScan = false
     private var creditRefreshInFlight = false
     private var nextCreditRefreshAt = Date.distantPast
     private var hasScannedAgents = false
@@ -19,11 +24,12 @@ final class MenuBarController: NSObject {
         super.init()
         configureStatusItem()
         refresh()
-        scanTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        scanTimer = Timer.scheduledTimer(withTimeInterval: scanInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
             }
         }
+        scanTimer?.tolerance = 1
     }
 
     private func configureStatusItem() {
@@ -36,8 +42,35 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func refresh() {
+        refresh(forceCredits: false)
+    }
+
+    @objc private func refreshNow() {
+        refresh(forceCredits: true)
+    }
+
+    private func refresh(forceCredits: Bool) {
+        if forceCredits {
+            forceCreditRefreshAfterScan = true
+        }
+        guard !scanInFlight else {
+            return
+        }
+
+        scanInFlight = true
+        let home = home
+        scanQueue.async { [weak self, home] in
+            let snapshot = AgentScanner(home: home).scan()
+            DispatchQueue.main.async { [weak self] in
+                self?.applySnapshot(snapshot)
+            }
+        }
+    }
+
+    private func applySnapshot(_ snapshot: AgentSnapshot) {
+        let forceCreditRefresh = forceCreditRefreshAfterScan
+        forceCreditRefreshAfterScan = false
         let previousSnapshot = lastSnapshot
-        let snapshot = scanner.scan()
         notificationController.handleTransition(
             from: previousSnapshot,
             to: snapshot,
@@ -45,7 +78,8 @@ final class MenuBarController: NSObject {
         )
         hasScannedAgents = true
         lastSnapshot = snapshot
-        refreshCreditsIfNeeded()
+        scanInFlight = false
+        refreshCreditsIfNeeded(force: forceCreditRefresh)
         updateStatusIcon()
         rebuildMenu()
     }
@@ -94,7 +128,7 @@ final class MenuBarController: NSObject {
         }
 
         menu.addItem(NSMenuItem.separator())
-        let refreshItem = NSMenuItem(title: "刷新", action: #selector(refresh), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
 
@@ -206,7 +240,6 @@ final class MenuBarController: NSObject {
         }
 
         creditRefreshInFlight = true
-        nextCreditRefreshAt = now.addingTimeInterval(60)
         let home = home
         creditRefreshQueue.async { [weak self, home] in
             let credits = CreditScanner(home: home).scan()
@@ -216,10 +249,18 @@ final class MenuBarController: NSObject {
                 }
                 self.lastCredits = credits.replacingMissingValues(with: self.lastCredits)
                 self.creditRefreshInFlight = false
+                self.nextCreditRefreshAt = Date().addingTimeInterval(self.nextCreditRefreshInterval(for: credits))
                 self.updateStatusIcon()
                 self.rebuildMenu()
             }
         }
+    }
+
+    private func nextCreditRefreshInterval(for credits: AgentCreditSnapshot) -> TimeInterval {
+        if credits.codex?.hasDisplayableUsage == true {
+            return creditRefreshInterval
+        }
+        return creditRetryInterval
     }
 
     private func credit(for kind: AgentKind) -> AgentCreditStatus? {

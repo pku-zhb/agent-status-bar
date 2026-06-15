@@ -12,6 +12,10 @@ struct AgentStatusBar {
             debugPs()
             return
         }
+        if CommandLine.arguments.contains("--credits") {
+            printCredits()
+            return
+        }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()
@@ -45,6 +49,21 @@ struct AgentStatusBar {
             print("stderr:\n\(result.stderr)")
         }
         print("stdout:\n\(result.stdout)")
+    }
+
+    private static func printCredits() {
+        let snapshot = CreditScanner().scan()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+
+        guard let data = try? encoder.encode(snapshot),
+              let text = String(data: data, encoding: .utf8) else {
+            fputs("failed to encode credit snapshot\n", stderr)
+            Foundation.exit(1)
+        }
+
+        print(text)
     }
 
 }
