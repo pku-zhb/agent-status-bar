@@ -4,11 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/AgentStatusBar.app"
 BIN="$ROOT/.build/release/AgentStatusBar"
-APP_VERSION="${APP_VERSION:-0.1.16}"
-BUILD_VERSION="${BUILD_VERSION:-17}"
+APP_VERSION="${APP_VERSION:-0.1.17}"
+BUILD_VERSION="${BUILD_VERSION:-18}"
 
 cd "$ROOT"
-swift build -c release
+if ! swift build -c release; then
+  mkdir -p "$(dirname "$BIN")"
+  swiftc -Osize -whole-module-optimization -parse-as-library Sources/AgentStatusBar/*.swift -o "$BIN"
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
