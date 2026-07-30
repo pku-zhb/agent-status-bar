@@ -16,6 +16,7 @@ struct CreditScannerTests {
     static func main() throws {
         try claudeCacheReadsSessionWeeklyAndFableWindows()
         try claudeCacheRejectsStaleUsage()
+        try claudeLiveUsageUsesTheSameWindowModel()
         try codexWeeklyOnlyPrimaryIsClassifiedAsWeekly()
         try codexLegacyDualWindowsUseDurationMetadata()
         try resetProgressKeepsSubPercentPrecisionAndResetsToZero()
@@ -74,6 +75,30 @@ struct CreditScannerTests {
             CreditScanner.claudeCreditStatus(fromConfigData: data, now: now) == nil,
             "Expected stale Claude cache to be rejected"
         )
+    }
+
+    static func claudeLiveUsageUsesTheSameWindowModel() throws {
+        let status = CreditScanner.claudeCreditStatus(
+            fromUtilization: [
+                "limits": [
+                    ["kind": "session", "percent": 4, "resets_at": "2027-01-15T10:00:00.000Z"],
+                    ["kind": "weekly_all", "percent": 21, "resets_at": "2027-01-16T10:00:00.000Z"],
+                    [
+                        "kind": "weekly_scoped",
+                        "percent": 39,
+                        "resets_at": "2027-01-16T10:00:00.000Z",
+                        "scope": ["model": ["display_name": "Fable"]]
+                    ]
+                ]
+            ],
+            source: "claude-api"
+        )
+
+        guard let status else {
+            throw TestFailure.failed("Expected live Claude status")
+        }
+        try expect(status.source == "claude-api", "Unexpected live Claude source")
+        try expect(status.windows.map(\.usedPercent) == [4, 21, 39], "Unexpected live Claude usage values")
     }
 
     static func codexWeeklyOnlyPrimaryIsClassifiedAsWeekly() throws {

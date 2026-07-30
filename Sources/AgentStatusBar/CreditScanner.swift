@@ -21,10 +21,54 @@ final class CreditScanner {
     }
 
     private func claudeCreditStatus() -> AgentCreditStatus? {
+        if let liveUtilization = refreshClaudeUsage(),
+           let liveStatus = Self.claudeCreditStatus(
+               fromUtilization: liveUtilization,
+               source: "claude-api"
+           ) {
+            return liveStatus
+        }
+
         guard let data = fileManager.contents(atPath: claudeConfigJSONPath()) else {
             return nil
         }
         return Self.claudeCreditStatus(fromConfigData: data)
+    }
+
+    private func refreshClaudeUsage() -> [String: Any]? {
+        guard let credentials = claudeCredentials(),
+              let accessToken = credentials.accessToken,
+              isClaudeSubscription(credentials.subscriptionType),
+              let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("claude-code/2.1", forHTTPHeaderField: "User-Agent")
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = ClaudeUsageResultBox()
+        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            defer { semaphore.signal() }
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let data,
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return
+            }
+            resultBox.utilization = object
+        }
+        task.resume()
+
+        if semaphore.wait(timeout: .now() + 16) == .timedOut {
+            task.cancel()
+            return nil
+        }
+        return resultBox.utilization
     }
 
     private func claudeConfigJSONPath() -> String {
@@ -60,6 +104,13 @@ final class CreditScanner {
             return nil
         }
 
+        return claudeCreditStatus(fromUtilization: utilization, source: "claude-cache")
+    }
+
+    static func claudeCreditStatus(
+        fromUtilization utilization: [String: Any],
+        source: String
+    ) -> AgentCreditStatus? {
         let windows = claudeCreditWindows(utilization)
         guard !windows.isEmpty else {
             return nil
@@ -73,7 +124,7 @@ final class CreditScanner {
             fiveHourResetAt: fiveHour?.resetAt,
             weeklyResetAt: weekly?.resetAt,
             unlimited: false,
-            source: "claude-cache",
+            source: source,
             windows: windows
         )
     }
@@ -303,6 +354,96 @@ final class CreditScanner {
         return shells.sorted().reversed().map { "\(root)/\($0)/bin/codex" }
     }
 
+    private func claudeCredentials() -> ClaudeOAuthCredentials? {
+        if let keychainCredentials = readClaudeKeychainCredentials() {
+            if isClaudeSubscription(keychainCredentials.subscriptionType) {
+                return keychainCredentials
+            }
+            if let subscriptionType = readClaudeFileSubscriptionType() {
+                return ClaudeOAuthCredentials(
+                    accessToken: keychainCredentials.accessToken,
+                    subscriptionType: subscriptionType,
+                    expiresAt: keychainCredentials.expiresAt
+                )
+            }
+            return keychainCredentials
+        }
+
+        return readClaudeFileCredentials()
+    }
+
+    private func readClaudeKeychainCredentials() -> ClaudeOAuthCredentials? {
+        let serviceName = "Claude Code-credentials"
+        let accountName = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !accountName.isEmpty,
+           let credentials = loadClaudeKeychainCredentials(serviceName: serviceName, accountName: accountName) {
+            return credentials
+        }
+        return loadClaudeKeychainCredentials(serviceName: serviceName, accountName: nil)
+    }
+
+    private func loadClaudeKeychainCredentials(
+        serviceName: String,
+        accountName: String?
+    ) -> ClaudeOAuthCredentials? {
+        var arguments = ["find-generic-password", "-s", serviceName]
+        if let accountName {
+            arguments.append(contentsOf: ["-a", accountName])
+        }
+        arguments.append("-w")
+
+        guard let result = ProcessRunner.run("/usr/bin/security", arguments, timeout: 3),
+              result.exitCode == 0,
+              let data = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let file = try? JSONDecoder().decode(ClaudeCredentialsFile.self, from: data) else {
+            return nil
+        }
+        return validClaudeCredentials(file.claudeAiOauth)
+    }
+
+    private func readClaudeFileCredentials() -> ClaudeOAuthCredentials? {
+        let path = "\(home)/.claude/.credentials.json"
+        guard let data = fileManager.contents(atPath: path),
+              let file = try? JSONDecoder().decode(ClaudeCredentialsFile.self, from: data) else {
+            return nil
+        }
+        return validClaudeCredentials(file.claudeAiOauth)
+    }
+
+    private func readClaudeFileSubscriptionType() -> String? {
+        let path = "\(home)/.claude/.credentials.json"
+        guard let data = fileManager.contents(atPath: path),
+              let file = try? JSONDecoder().decode(ClaudeCredentialsFile.self, from: data),
+              let subscriptionType = file.claudeAiOauth?.subscriptionType?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !subscriptionType.isEmpty else {
+            return nil
+        }
+        return subscriptionType
+    }
+
+    private func validClaudeCredentials(_ credentials: ClaudeOAuthCredentials?) -> ClaudeOAuthCredentials? {
+        guard let credentials,
+              let accessToken = credentials.accessToken,
+              !accessToken.isEmpty else {
+            return nil
+        }
+        if let expiresAt = credentials.expiresAt,
+           expiresAt <= Date().timeIntervalSince1970 * 1_000 {
+            return nil
+        }
+        return credentials
+    }
+
+    private func isClaudeSubscription(_ subscriptionType: String?) -> Bool {
+        guard let subscriptionType = subscriptionType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !subscriptionType.isEmpty else {
+            return false
+        }
+        return !subscriptionType.lowercased().contains("api")
+    }
+
     private static func remainingPercent(_ value: Any?) -> Int? {
         guard let used = percent(value) else {
             return nil
@@ -374,4 +515,18 @@ final class CreditScanner {
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: value)
     }
+}
+
+private final class ClaudeUsageResultBox: @unchecked Sendable {
+    var utilization: [String: Any]?
+}
+
+private struct ClaudeCredentialsFile: Decodable {
+    let claudeAiOauth: ClaudeOAuthCredentials?
+}
+
+private struct ClaudeOAuthCredentials: Decodable {
+    let accessToken: String?
+    let subscriptionType: String?
+    let expiresAt: Double?
 }

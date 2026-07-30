@@ -75,9 +75,11 @@ state files only:
 - Claude Code session files in `~/.claude/sessions/<pid>.json` for cwd,
   title, and busy / idle / waiting state. If the session file is missing or
   stale, the app falls back to process-child activity.
-- Claude Code usage windows from Claude Code's own
-  `~/.claude.json` `cachedUsageUtilization` cache. The app never reads Claude
-  credentials or calls the Anthropic usage API itself.
+- Claude Code usage windows are refreshed automatically from Anthropic's usage
+  endpoint using Claude Code's existing OAuth credential in Keychain. If that
+  request fails, the app falls back to Claude Code's fresh
+  `~/.claude.json` `cachedUsageUtilization` cache. Credentials are never stored
+  or printed by the app.
 - Codex usage from the local Codex app-server `account/rateLimits/read` API.
   Windows are classified by `windowDurationMins`, so weekly-only responses are
   not mislabeled as five-hour usage.
