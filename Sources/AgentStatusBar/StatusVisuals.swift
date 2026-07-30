@@ -151,7 +151,7 @@ enum StatusVisuals {
     }
 
     static func drawVerticalUsageBar(
-        usedPercent: Int?,
+        usedPercent: Double?,
         in rect: CGRect,
         fillColor: NSColor = .white
     ) {
@@ -267,7 +267,7 @@ enum StatusBarIconRenderer {
     private static func groupWidth(for clients: [AgentClient], overflow: Int, credit: AgentCreditStatus?) -> CGFloat {
         let visibleCount = min(clients.count, StatusVisuals.maxMenuBarLights)
         let iconWidth: CGFloat = 24
-        let creditWidth: CGFloat = credit == nil ? 0 : 58
+        let creditWidth = credit.map { menuBarCreditWidth($0) } ?? 0
         guard visibleCount > 0 else {
             return iconWidth + creditWidth
         }
@@ -312,28 +312,30 @@ enum StatusBarIconRenderer {
 
     private static func drawMenuBarCreditMeters(_ credit: AgentCreditStatus, atX x: CGFloat) {
         let barY: CGFloat = 3
-        let barWidth: CGFloat = 9
+        let barWidth: CGFloat = 7
         let barHeight: CGFloat = 18
-        StatusVisuals.drawVerticalUsageBar(
-            usedPercent: credit.fiveHourUsedPercent,
-            in: CGRect(x: x, y: barY, width: barWidth, height: barHeight),
-            fillColor: .white
-        )
-        StatusVisuals.drawVerticalUsageBar(
-            usedPercent: credit.fiveHourResetElapsedPercent,
-            in: CGRect(x: x + 12, y: barY, width: barWidth, height: barHeight),
-            fillColor: .white
-        )
-        StatusVisuals.drawVerticalUsageBar(
-            usedPercent: credit.weeklyUsedPercent,
-            in: CGRect(x: x + 30, y: barY, width: barWidth, height: barHeight),
-            fillColor: .white
-        )
-        StatusVisuals.drawVerticalUsageBar(
-            usedPercent: credit.weeklyResetElapsedPercent,
-            in: CGRect(x: x + 42, y: barY, width: barWidth, height: barHeight),
-            fillColor: .white
-        )
+        let windowStep: CGFloat = 24
+        for (index, window) in credit.displayWindows.enumerated() {
+            let windowX = x + CGFloat(index) * windowStep
+            StatusVisuals.drawVerticalUsageBar(
+                usedPercent: window.usedPercent.map(Double.init),
+                in: CGRect(x: windowX, y: barY, width: barWidth, height: barHeight),
+                fillColor: .white
+            )
+            StatusVisuals.drawVerticalUsageBar(
+                usedPercent: window.resetElapsedPercent(),
+                in: CGRect(x: windowX + 10, y: barY, width: barWidth, height: barHeight),
+                fillColor: .white
+            )
+        }
+    }
+
+    private static func menuBarCreditWidth(_ credit: AgentCreditStatus) -> CGFloat {
+        let count = credit.displayWindows.count
+        guard count > 0 else {
+            return 0
+        }
+        return 7 + CGFloat(count - 1) * 24 + 17
     }
 
     private static func textWidth(_ text: String, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
@@ -415,32 +417,26 @@ final class AgentGroupRowView: NSView {
     }
 
     private func drawCreditMeters(_ credit: AgentCreditStatus, at origin: CGPoint) {
-        drawMeter(
-            usedPercent: credit.fiveHourUsedPercent,
-            at: origin,
-            fillColor: .white
-        )
-        drawMeter(
-            usedPercent: credit.fiveHourResetElapsedPercent,
-            at: CGPoint(x: origin.x + 22, y: origin.y),
-            fillColor: .white
-        )
-        drawMeter(
-            usedPercent: credit.weeklyUsedPercent,
-            at: CGPoint(x: origin.x + 58, y: origin.y),
-            fillColor: .white
-        )
-        drawMeter(
-            usedPercent: credit.weeklyResetElapsedPercent,
-            at: CGPoint(x: origin.x + 80, y: origin.y),
-            fillColor: .white
-        )
+        let windowStep: CGFloat = 42
+        for (index, window) in credit.displayWindows.enumerated() {
+            let windowX = origin.x + CGFloat(index) * windowStep
+            drawMeter(
+                usedPercent: window.usedPercent.map(Double.init),
+                at: CGPoint(x: windowX, y: origin.y),
+                fillColor: .white
+            )
+            drawMeter(
+                usedPercent: window.resetElapsedPercent(),
+                at: CGPoint(x: windowX + 18, y: origin.y),
+                fillColor: .white
+            )
+        }
     }
 
-    private func drawMeter(usedPercent: Int?, at origin: CGPoint, fillColor: NSColor) {
+    private func drawMeter(usedPercent: Double?, at origin: CGPoint, fillColor: NSColor) {
         StatusVisuals.drawVerticalUsageBar(
             usedPercent: usedPercent,
-            in: CGRect(x: origin.x, y: origin.y, width: 17, height: 42),
+            in: CGRect(x: origin.x, y: origin.y, width: 14, height: 42),
             fillColor: fillColor
         )
     }

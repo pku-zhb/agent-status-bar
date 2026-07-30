@@ -1,6 +1,10 @@
 import Foundation
 
 final class CreditScanner {
+    private static let fiveHours: TimeInterval = 5 * 60 * 60
+    private static let sevenDays: TimeInterval = 7 * 24 * 60 * 60
+    private static let claudeCacheMaxAge: TimeInterval = 24 * 60 * 60
+
     private let home: String
     private let fileManager = FileManager.default
 
@@ -17,79 +21,148 @@ final class CreditScanner {
     }
 
     private func claudeCreditStatus() -> AgentCreditStatus? {
-        if let usage = refreshClaudeUsage(), usage.hasUsagePercent {
-            return claudeCreditStatus(from: usage, source: "claude-hud-api")
+        guard let data = fileManager.contents(atPath: claudeConfigJSONPath()) else {
+            return nil
+        }
+        return Self.claudeCreditStatus(fromConfigData: data)
+    }
+
+    private func claudeConfigJSONPath() -> String {
+        guard let configDir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !configDir.isEmpty else {
+            return "\(home)/.claude.json"
         }
 
-        guard let usage = cachedClaudeUsage() else {
+        let expanded: String
+        if configDir == "~" {
+            expanded = home
+        } else if configDir.hasPrefix("~/") {
+            expanded = "\(home)/\(configDir.dropFirst(2))"
+        } else {
+            expanded = configDir
+        }
+        return "\(expanded).json"
+    }
+
+    static func claudeCreditStatus(fromConfigData data: Data, now: Date = Date()) -> AgentCreditStatus? {
+        guard let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cachedUsage = config["cachedUsageUtilization"] as? [String: Any] else {
             return nil
         }
 
-        return claudeCreditStatus(from: usage, source: "claude-hud-cache")
-    }
+        if let fetchedAtMilliseconds = double(cachedUsage["fetchedAtMs"]),
+           now.timeIntervalSince1970 - fetchedAtMilliseconds / 1_000 > claudeCacheMaxAge {
+            return nil
+        }
 
-    private func claudeCreditStatus(from usage: ClaudeUsageData, source: String) -> AgentCreditStatus {
-        AgentCreditStatus(
-            fiveHourRemainingPercent: remainingPercent(fromUsedPercent: usage.fiveHour),
-            weeklyRemainingPercent: remainingPercent(fromUsedPercent: usage.sevenDay),
-            fiveHourResetAt: parseISODate(usage.fiveHourResetAt),
-            weeklyResetAt: parseISODate(usage.sevenDayResetAt),
+        guard let utilization = cachedUsage["utilization"] as? [String: Any] else {
+            return nil
+        }
+
+        let windows = claudeCreditWindows(utilization)
+        guard !windows.isEmpty else {
+            return nil
+        }
+
+        let fiveHour = windows.first { $0.id == "five-hour" }
+        let weekly = windows.first { $0.id == "weekly-all" }
+        return AgentCreditStatus(
+            fiveHourRemainingPercent: fiveHour?.remainingPercent,
+            weeklyRemainingPercent: weekly?.remainingPercent,
+            fiveHourResetAt: fiveHour?.resetAt,
+            weeklyResetAt: weekly?.resetAt,
             unlimited: false,
-            source: source
+            source: "claude-cache",
+            windows: windows
         )
     }
 
-    private func cachedClaudeUsage() -> ClaudeUsageData? {
-        let path = "\(home)/.claude/plugins/claude-hud/.usage-cache.json"
-        guard let data = fileManager.contents(atPath: path),
-              let cache = try? JSONDecoder().decode(ClaudeUsageCache.self, from: data) else {
-            return nil
-        }
+    private static func claudeCreditWindows(_ utilization: [String: Any]) -> [AgentCreditWindow] {
+        let limits = (utilization["limits"] as? [Any] ?? []).compactMap { $0 as? [String: Any] }
+        let sessionLimit = limits.first { string($0["kind"]) == "session" }
+            ?? limits.first { string($0["group"]) == "session" }
+        let weeklyAllLimit = limits.first { string($0["kind"]) == "weekly_all" }
+            ?? limits.first {
+                string($0["group"]) == "weekly" && !($0["scope"] is [String: Any])
+            }
+        let scopedWeeklyLimit = limits.first(where: isFableWeeklyLimit)
+            ?? limits.first { string($0["kind"]) == "weekly_scoped" }
 
-        return [cache.data, cache.lastGoodData]
-            .compactMap { $0 }
-            .first { $0.hasUsagePercent }
+        return [
+            limitWindow(id: "five-hour", label: "5h", limit: sessionLimit, windowSeconds: fiveHours)
+                ?? utilizationWindow(
+                    id: "five-hour",
+                    label: "5h",
+                    value: utilization["five_hour"] as? [String: Any],
+                    windowSeconds: fiveHours
+                ),
+            limitWindow(id: "weekly-all", label: "W", limit: weeklyAllLimit, windowSeconds: sevenDays)
+                ?? utilizationWindow(
+                    id: "weekly-all",
+                    label: "W",
+                    value: utilization["seven_day"] as? [String: Any],
+                    windowSeconds: sevenDays
+                ),
+            limitWindow(id: "weekly-fable", label: "F", limit: scopedWeeklyLimit, windowSeconds: sevenDays)
+        ].compactMap { $0 }
     }
 
-    private func refreshClaudeUsage() -> ClaudeUsageData? {
-        guard let credentials = claudeCredentials(),
-              let accessToken = credentials.accessToken,
-              isClaudeSubscription(credentials.subscriptionType),
-              let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+    private static func limitWindow(
+        id: String,
+        label: String,
+        limit: [String: Any]?,
+        windowSeconds: TimeInterval
+    ) -> AgentCreditWindow? {
+        guard let limit else {
             return nil
         }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 15
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("claude-code/2.1", forHTTPHeaderField: "User-Agent")
-
-        let semaphore = DispatchSemaphore(value: 0)
-        let resultBox = ClaudeUsageResultBox()
-        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
-            defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode == 200,
-                  let data,
-                  let decoded = try? JSONDecoder().decode(ClaudeUsageApiResponse.self, from: data) else {
-                return
-            }
-            resultBox.usage = ClaudeUsageData(
-                fiveHour: decoded.fiveHour?.utilization,
-                sevenDay: decoded.sevenDay?.utilization,
-                fiveHourResetAt: decoded.fiveHour?.resetsAt,
-                sevenDayResetAt: decoded.sevenDay?.resetsAt
-            )
-        }
-        task.resume()
-
-        if semaphore.wait(timeout: .now() + 16) == .timedOut {
-            task.cancel()
+        let usedPercent = percent(limit["percent"])
+        let resetAt = isoDate(limit["resets_at"])
+        guard usedPercent != nil || resetAt != nil else {
             return nil
         }
-        return resultBox.usage
+        return AgentCreditWindow(
+            id: id,
+            label: label,
+            usedPercent: usedPercent,
+            resetAt: resetAt,
+            windowSeconds: windowSeconds
+        )
+    }
+
+    private static func utilizationWindow(
+        id: String,
+        label: String,
+        value: [String: Any]?,
+        windowSeconds: TimeInterval
+    ) -> AgentCreditWindow? {
+        guard let value else {
+            return nil
+        }
+        let usedPercent = percent(value["utilization"])
+        let resetAt = isoDate(value["resets_at"])
+        guard usedPercent != nil || resetAt != nil else {
+            return nil
+        }
+        return AgentCreditWindow(
+            id: id,
+            label: label,
+            usedPercent: usedPercent,
+            resetAt: resetAt,
+            windowSeconds: windowSeconds
+        )
+    }
+
+    private static func isFableWeeklyLimit(_ limit: [String: Any]) -> Bool {
+        guard string(limit["kind"]) == "weekly_scoped",
+              let scope = limit["scope"] as? [String: Any],
+              let model = scope["model"] as? [String: Any] else {
+            return false
+        }
+        let modelID = string(model["id"])?.lowercased() ?? ""
+        let displayName = string(model["display_name"])?.lowercased() ?? ""
+        return modelID.contains("fable") || displayName.contains("fable")
     }
 
     private func codexCreditStatus() -> AgentCreditStatus? {
@@ -120,44 +193,73 @@ final class CreditScanner {
         for line in stdout.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let data = String(line).data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  number(object["id"]) == 2,
+                  Self.double(object["id"]) == 2,
                   let result = object["result"] as? [String: Any],
                   let rateLimits = result["rateLimits"] as? [String: Any] else {
                 continue
             }
-
-            return codexStatus(from: rateLimits)
+            return Self.codexStatus(from: rateLimits)
         }
         return nil
     }
 
-    private func codexStatus(from rateLimits: [String: Any]) -> AgentCreditStatus {
-        let primary = rateLimits["primary"] as? [String: Any]
-        let secondary = rateLimits["secondary"] as? [String: Any]
+    static func codexStatus(from rateLimits: [String: Any]) -> AgentCreditStatus {
+        let classified = classifyCodexRateLimitWindows(rateLimits)
+        let fiveHour = classified.fiveHour
+        let weekly = classified.weekly
         let credits = rateLimits["credits"] as? [String: Any]
+        let weeklyUsedPercent = percent(weekly?["usedPercent"])
+        let weeklyResetAt = unixDate(weekly?["resetsAt"])
 
         return AgentCreditStatus(
-            fiveHourRemainingPercent: remainingPercent(fromUsedPercent: primary?["usedPercent"]),
-            weeklyRemainingPercent: remainingPercent(fromUsedPercent: secondary?["usedPercent"]),
-            fiveHourResetAt: dateFromUnixSeconds(primary?["resetsAt"]),
-            weeklyResetAt: dateFromUnixSeconds(secondary?["resetsAt"]),
+            fiveHourRemainingPercent: remainingPercent(fiveHour?["usedPercent"]),
+            weeklyRemainingPercent: remainingPercent(weeklyUsedPercent),
+            fiveHourResetAt: unixDate(fiveHour?["resetsAt"]),
+            weeklyResetAt: weeklyResetAt,
             unlimited: bool(credits?["unlimited"]) ?? false,
-            source: "codex-app-server"
+            source: "codex-app-server",
+            windows: [AgentCreditWindow(
+                id: "weekly",
+                label: "W",
+                usedPercent: weeklyUsedPercent,
+                resetAt: weeklyResetAt,
+                windowSeconds: sevenDays
+            )]
+        )
+    }
+
+    static func classifyCodexRateLimitWindows(
+        _ rateLimits: [String: Any]
+    ) -> (fiveHour: [String: Any]?, weekly: [String: Any]?) {
+        let primary = rateLimits["primary"] as? [String: Any]
+        let secondary = rateLimits["secondary"] as? [String: Any]
+        let windows = [primary, secondary].compactMap { $0 }
+        let hasDurationMetadata = windows.contains { double($0["windowDurationMins"]) != nil }
+
+        guard hasDurationMetadata else {
+            return (primary, secondary)
+        }
+
+        return (
+            windows.first {
+                guard let duration = double($0["windowDurationMins"]) else { return false }
+                return duration <= 24 * 60
+            },
+            windows.first {
+                guard let duration = double($0["windowDurationMins"]) else { return false }
+                return duration > 24 * 60
+            }
         )
     }
 
     private func codexExecutablePath() -> String? {
-        for candidate in codexExecutableCandidates() where fileManager.isExecutableFile(atPath: candidate) {
-            return candidate
-        }
-        return nil
+        codexExecutableCandidates().first { fileManager.isExecutableFile(atPath: $0) }
     }
 
     private func codexExecutableCandidates() -> [String] {
         var candidates: [String] = []
-        let env = ProcessInfo.processInfo.environment
-
-        if let path = env["PATH"] {
+        let environment = ProcessInfo.processInfo.environment
+        if let path = environment["PATH"] {
             candidates.append(contentsOf: path
                 .split(separator: ":", omittingEmptySubsequences: true)
                 .map { "\($0)/codex" })
@@ -201,129 +303,37 @@ final class CreditScanner {
         return shells.sorted().reversed().map { "\(root)/\($0)/bin/codex" }
     }
 
-    private func claudeCredentials() -> ClaudeOAuthCredentials? {
-        if let keychainCredentials = readClaudeKeychainCredentials() {
-            if isClaudeSubscription(keychainCredentials.subscriptionType) {
-                return keychainCredentials
-            }
-            if let subscriptionType = readClaudeFileSubscriptionType() {
-                return ClaudeOAuthCredentials(
-                    accessToken: keychainCredentials.accessToken,
-                    subscriptionType: subscriptionType,
-                    expiresAt: keychainCredentials.expiresAt
-                )
-            }
-            return keychainCredentials
-        }
-
-        return readClaudeFileCredentials()
-    }
-
-    private func readClaudeKeychainCredentials() -> ClaudeOAuthCredentials? {
-        let serviceNames = ["Claude Code-credentials"]
-        let accountName = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
-
-        for serviceName in serviceNames {
-            if !accountName.isEmpty,
-               let credentials = loadClaudeKeychainCredentials(serviceName: serviceName, accountName: accountName) {
-                return credentials
-            }
-            if let credentials = loadClaudeKeychainCredentials(serviceName: serviceName, accountName: nil) {
-                return credentials
-            }
-        }
-        return nil
-    }
-
-    private func loadClaudeKeychainCredentials(serviceName: String, accountName: String?) -> ClaudeOAuthCredentials? {
-        var arguments = ["find-generic-password", "-s", serviceName]
-        if let accountName {
-            arguments.append(contentsOf: ["-a", accountName])
-        }
-        arguments.append("-w")
-
-        guard let result = ProcessRunner.run("/usr/bin/security", arguments, timeout: 3),
-              result.exitCode == 0,
-              let data = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
-              let file = try? JSONDecoder().decode(ClaudeCredentialsFile.self, from: data) else {
+    private static func remainingPercent(_ value: Any?) -> Int? {
+        guard let used = percent(value) else {
             return nil
         }
-        return validClaudeCredentials(file.claudeAiOauth)
+        return min(100, max(0, 100 - used))
     }
 
-    private func readClaudeFileCredentials() -> ClaudeOAuthCredentials? {
-        let path = "\(home)/.claude/.credentials.json"
-        guard let data = fileManager.contents(atPath: path),
-              let file = try? JSONDecoder().decode(ClaudeCredentialsFile.self, from: data) else {
+    private static func percent(_ value: Any?) -> Int? {
+        guard let value = double(value) else {
             return nil
         }
-        return validClaudeCredentials(file.claudeAiOauth)
+        return min(100, max(0, Int(value.rounded())))
     }
 
-    private func readClaudeFileSubscriptionType() -> String? {
-        let path = "\(home)/.claude/.credentials.json"
-        guard let data = fileManager.contents(atPath: path),
-              let file = try? JSONDecoder().decode(ClaudeCredentialsFile.self, from: data),
-              let subscriptionType = file.claudeAiOauth?.subscriptionType?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !subscriptionType.isEmpty else {
-            return nil
-        }
-        return subscriptionType
-    }
-
-    private func validClaudeCredentials(_ credentials: ClaudeOAuthCredentials?) -> ClaudeOAuthCredentials? {
-        guard let credentials,
-              let accessToken = credentials.accessToken,
-              !accessToken.isEmpty else {
-            return nil
-        }
-        if let expiresAt = credentials.expiresAt,
-           expiresAt <= Date().timeIntervalSince1970 * 1000 {
-            return nil
-        }
-        return credentials
-    }
-
-    private func isClaudeSubscription(_ subscriptionType: String?) -> Bool {
-        guard let subscriptionType = subscriptionType?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !subscriptionType.isEmpty else {
-            return false
-        }
-        return !subscriptionType.lowercased().contains("api")
-    }
-
-    private func remainingPercent(fromUsedPercent value: Any?) -> Int? {
-        guard let used = number(value) else {
-            return nil
-        }
-        return clampedPercent(100 - used)
-    }
-
-    private func clampedPercent(_ value: Int?) -> Int? {
-        guard let value else {
-            return nil
-        }
-        return min(100, max(0, value))
-    }
-
-    private func number(_ value: Any?) -> Int? {
-        if let value = value as? Int {
+    private static func double(_ value: Any?) -> Double? {
+        if let value = value as? Double, value.isFinite {
             return value
         }
-        if let value = value as? Double {
-            return Int(value.rounded())
+        if let value = value as? Int {
+            return Double(value)
         }
         if let value = value as? NSNumber {
-            return Int(value.doubleValue.rounded())
+            return value.doubleValue.isFinite ? value.doubleValue : nil
         }
-        if let value = value as? String,
-           let double = Double(value) {
-            return Int(double.rounded())
+        if let value = value as? String, let parsed = Double(value), parsed.isFinite {
+            return parsed
         }
         return nil
     }
 
-    private func bool(_ value: Any?) -> Bool? {
+    private static func bool(_ value: Any?) -> Bool? {
         if let value = value as? Bool {
             return value
         }
@@ -331,20 +341,28 @@ final class CreditScanner {
             return value.boolValue
         }
         if let value = value as? String {
-            return Bool(value)
+            return value.lowercased() == "true"
         }
         return nil
     }
 
-    private func dateFromUnixSeconds(_ value: Any?) -> Date? {
-        guard let seconds = number(value), seconds > 0 else {
+    private static func string(_ value: Any?) -> String? {
+        guard let value = value as? String else {
             return nil
         }
-        return Date(timeIntervalSince1970: Double(seconds))
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func parseISODate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else {
+    private static func unixDate(_ value: Any?) -> Date? {
+        guard let seconds = double(value), seconds > 0 else {
+            return nil
+        }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    private static func isoDate(_ value: Any?) -> Date? {
+        guard let value = string(value) else {
             return nil
         }
         let fractional = ISO8601DateFormatter()
@@ -355,55 +373,5 @@ final class CreditScanner {
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: value)
-    }
-}
-
-private struct ClaudeUsageCache: Decodable {
-    let data: ClaudeUsageData?
-    let lastGoodData: ClaudeUsageData?
-}
-
-private struct ClaudeCredentialsFile: Decodable {
-    let claudeAiOauth: ClaudeOAuthCredentials?
-}
-
-private final class ClaudeUsageResultBox: @unchecked Sendable {
-    var usage: ClaudeUsageData?
-}
-
-private struct ClaudeOAuthCredentials: Decodable {
-    let accessToken: String?
-    let subscriptionType: String?
-    let expiresAt: Double?
-}
-
-private struct ClaudeUsageApiResponse: Decodable {
-    let fiveHour: ClaudeUsageWindow?
-    let sevenDay: ClaudeUsageWindow?
-
-    private enum CodingKeys: String, CodingKey {
-        case fiveHour = "five_hour"
-        case sevenDay = "seven_day"
-    }
-}
-
-private struct ClaudeUsageWindow: Decodable {
-    let utilization: Double?
-    let resetsAt: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case utilization
-        case resetsAt = "resets_at"
-    }
-}
-
-private struct ClaudeUsageData: Decodable {
-    let fiveHour: Double?
-    let sevenDay: Double?
-    let fiveHourResetAt: String?
-    let sevenDayResetAt: String?
-
-    var hasUsagePercent: Bool {
-        fiveHour != nil || sevenDay != nil
     }
 }

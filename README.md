@@ -58,6 +58,12 @@ bash scripts/build_app.sh
 open dist/AgentStatusBar.app
 ```
 
+Install the built app into `/Applications` and register it to start at login:
+
+```bash
+bash scripts/install_local.sh
+```
+
 ## Status Sources
 
 This app does not install or read hooks. It derives state from local process and
@@ -69,7 +75,9 @@ state files only:
 - Claude Code session files in `~/.claude/sessions/<pid>.json` for cwd,
   title, and busy / idle / waiting state. If the session file is missing or
   stale, the app falls back to process-child activity.
-- Claude Code credit-left percentages from
-  `~/.claude/plugins/claude-hud/.usage-cache.json`.
-- Codex credit-left percentages from the local Codex app-server
-  `account/rateLimits/read` API.
+- Claude Code usage windows from Claude Code's own
+  `~/.claude.json` `cachedUsageUtilization` cache. The app never reads Claude
+  credentials or calls the Anthropic usage API itself.
+- Codex usage from the local Codex app-server `account/rateLimits/read` API.
+  Windows are classified by `windowDurationMins`, so weekly-only responses are
+  not mislabeled as five-hour usage.

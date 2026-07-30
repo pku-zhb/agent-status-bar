@@ -257,7 +257,7 @@ final class MenuBarController: NSObject {
     }
 
     private func nextCreditRefreshInterval(for credits: AgentCreditSnapshot) -> TimeInterval {
-        if credits.codex?.hasDisplayableUsage == true {
+        if credits.claude?.hasDisplayableUsage == true || credits.codex?.hasDisplayableUsage == true {
             return creditRefreshInterval
         }
         return creditRetryInterval

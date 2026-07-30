@@ -107,6 +107,35 @@ struct AgentCreditSnapshot: Codable {
     }
 }
 
+struct AgentCreditWindow: Codable, Equatable {
+    let id: String
+    let label: String
+    let usedPercent: Int?
+    let resetAt: Date?
+    let windowSeconds: TimeInterval?
+
+    var remainingPercent: Int? {
+        guard let usedPercent else {
+            return nil
+        }
+        return min(100, max(0, 100 - usedPercent))
+    }
+
+    func resetElapsedPercent(now: Date = Date()) -> Double? {
+        guard let resetAt, let windowSeconds, windowSeconds > 0 else {
+            return nil
+        }
+
+        let remaining = resetAt.timeIntervalSince(now)
+        if remaining <= 0 {
+            return 0
+        }
+
+        let value = min(100, max(0, (windowSeconds - remaining) / windowSeconds * 100))
+        return (value * 1_000).rounded() / 1_000
+    }
+}
+
 struct AgentCreditStatus: Codable {
     let fiveHourRemainingPercent: Int?
     let weeklyRemainingPercent: Int?
@@ -114,43 +143,55 @@ struct AgentCreditStatus: Codable {
     let weeklyResetAt: Date?
     let unlimited: Bool
     let source: String
+    let windows: [AgentCreditWindow]
 
     var menuText: String {
-        "5h \(display(fiveHourRemainingPercent)) left · weekly \(display(weeklyRemainingPercent)) left"
-    }
-
-    var menuBarText: String {
-        "5h \(display(fiveHourRemainingPercent)) / W \(display(weeklyRemainingPercent))"
-    }
-
-    var fiveHourUsedPercent: Int? {
-        usedPercent(fromRemaining: fiveHourRemainingPercent)
-    }
-
-    var weeklyUsedPercent: Int? {
-        usedPercent(fromRemaining: weeklyRemainingPercent)
-    }
-
-    var fiveHourResetElapsedPercent: Int? {
-        elapsedPercent(until: fiveHourResetAt, windowSeconds: 5 * 60 * 60)
-    }
-
-    var weeklyResetElapsedPercent: Int? {
-        elapsedPercent(until: weeklyResetAt, windowSeconds: 7 * 24 * 60 * 60)
-    }
-
-    var hasDisplayableUsage: Bool {
-        unlimited || fiveHourRemainingPercent != nil || weeklyRemainingPercent != nil || fiveHourResetAt != nil || weeklyResetAt != nil
-    }
-
-    private func display(_ value: Int?) -> String {
         if unlimited {
             return "unlimited"
         }
-        guard let value else {
-            return "n/a"
+        return displayWindows
+            .map { "\($0.label) \(displayUsed($0.usedPercent))" }
+            .joined(separator: " · ")
+    }
+
+    var menuBarText: String {
+        menuText
+    }
+
+    var displayWindows: [AgentCreditWindow] {
+        if !windows.isEmpty {
+            return windows
         }
-        return "\(value)%"
+
+        return [
+            AgentCreditWindow(
+                id: "five-hour",
+                label: "5h",
+                usedPercent: usedPercent(fromRemaining: fiveHourRemainingPercent),
+                resetAt: fiveHourResetAt,
+                windowSeconds: 5 * 60 * 60
+            ),
+            AgentCreditWindow(
+                id: "weekly",
+                label: "W",
+                usedPercent: usedPercent(fromRemaining: weeklyRemainingPercent),
+                resetAt: weeklyResetAt,
+                windowSeconds: 7 * 24 * 60 * 60
+            )
+        ].filter { $0.usedPercent != nil || $0.resetAt != nil }
+    }
+
+    var hasDisplayableUsage: Bool {
+        unlimited
+            || displayWindows.contains { $0.usedPercent != nil || $0.resetAt != nil }
+            || fiveHourRemainingPercent != nil
+            || weeklyRemainingPercent != nil
+            || fiveHourResetAt != nil
+            || weeklyResetAt != nil
+    }
+
+    private func displayUsed(_ value: Int?) -> String {
+        value.map { "\($0)% used" } ?? "n/a"
     }
 
     private func usedPercent(fromRemaining value: Int?) -> Int? {
@@ -160,19 +201,6 @@ struct AgentCreditStatus: Codable {
         return min(100, max(0, 100 - value))
     }
 
-    private func elapsedPercent(until resetAt: Date?, windowSeconds: TimeInterval) -> Int? {
-        guard !unlimited, let resetAt else {
-            return nil
-        }
-
-        let remaining = resetAt.timeIntervalSince(Date())
-        if remaining <= 0 {
-            return 100
-        }
-        let elapsed = windowSeconds - remaining
-        let percent = Int((elapsed / windowSeconds * 100).rounded())
-        return min(100, max(0, percent))
-    }
 }
 
 extension AgentSnapshot {
