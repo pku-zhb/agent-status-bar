@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 private enum TestFailure: Error, CustomStringConvertible {
@@ -20,6 +21,8 @@ struct CreditScannerTests {
         try codexWeeklyOnlyPrimaryIsClassifiedAsWeekly()
         try codexLegacyDualWindowsUseDurationMetadata()
         try resetProgressKeepsSubPercentPrecisionAndResetsToZero()
+        try featurePreferencesDefaultOnAndRemainIndependent()
+        try statusHalosAndUsageChangeLayoutIndependently()
         print("CreditScanner tests passed")
     }
 
@@ -147,6 +150,108 @@ struct CreditScannerTests {
             windowSeconds: windowSeconds
         )
         try expect(expired.resetElapsedPercent(now: now) == 0, "Expired reset window did not return to zero")
+    }
+
+    static func featurePreferencesDefaultOnAndRemainIndependent() throws {
+        let suiteName = "AgentStatusBarTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw TestFailure.failed("Could not create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let preferences = MenuBarFeaturePreferences(defaults: defaults)
+        try expect(preferences.showsStatusHalos, "Status halos should default on")
+        try expect(preferences.showsUsage, "Usage should default on")
+
+        preferences.showsStatusHalos = false
+        let reloaded = MenuBarFeaturePreferences(defaults: defaults)
+        try expect(!reloaded.showsStatusHalos, "Status halo setting was not persisted")
+        try expect(reloaded.showsUsage, "Status halo setting changed usage setting")
+
+        reloaded.showsUsage = false
+        try expect(!preferences.showsStatusHalos, "Usage setting changed status halo setting")
+        try expect(!preferences.showsUsage, "Usage setting was not persisted")
+    }
+
+    static func statusHalosAndUsageChangeLayoutIndependently() throws {
+        let client = AgentClient(
+            id: "claude-1",
+            kind: .claude,
+            pid: 1,
+            parentPid: 0,
+            workspaceId: nil,
+            surfaceId: nil,
+            tty: nil,
+            state: .running,
+            cwd: nil,
+            title: nil,
+            detail: nil,
+            lastSeenAt: nil,
+            waitingSince: nil
+        )
+        let snapshot = AgentSnapshot(
+            generatedAt: Date(),
+            agentPids: [1],
+            clients: [client],
+            summary: AgentSummary(
+                total: 1,
+                codex: 0,
+                claude: 1,
+                running: 1,
+                waitingApproval: 0,
+                idle: 0,
+                stale: 0,
+                unknown: 0
+            )
+        )
+        let credit = AgentCreditStatus(
+            fiveHourRemainingPercent: 80,
+            weeklyRemainingPercent: nil,
+            fiveHourResetAt: nil,
+            weeklyResetAt: nil,
+            unlimited: false,
+            source: "test",
+            windows: [
+                AgentCreditWindow(
+                    id: "five-hour",
+                    label: "5h",
+                    usedPercent: 20,
+                    resetAt: nil,
+                    windowSeconds: 5 * 60 * 60
+                )
+            ]
+        )
+        let credits = AgentCreditSnapshot(generatedAt: Date(), codex: credit, claude: credit)
+
+        let all = StatusBarIconRenderer.render(
+            snapshot: snapshot,
+            credits: credits,
+            showsStatusHalos: true,
+            showsUsage: true
+        ).size.width
+        let halosOnly = StatusBarIconRenderer.render(
+            snapshot: snapshot,
+            credits: credits,
+            showsStatusHalos: true,
+            showsUsage: false
+        ).size.width
+        let usageOnly = StatusBarIconRenderer.render(
+            snapshot: snapshot,
+            credits: credits,
+            showsStatusHalos: false,
+            showsUsage: true
+        ).size.width
+        let iconsOnly = StatusBarIconRenderer.render(
+            snapshot: snapshot,
+            credits: credits,
+            showsStatusHalos: false,
+            showsUsage: false
+        ).size.width
+
+        try expect(all > halosOnly, "Usage toggle did not change menu bar layout")
+        try expect(all > usageOnly, "Status halo toggle did not change menu bar layout")
+        try expect(halosOnly > iconsOnly, "Status halos were not independently visible")
+        try expect(usageOnly > iconsOnly, "Usage meters were not independently visible")
     }
 
     static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {

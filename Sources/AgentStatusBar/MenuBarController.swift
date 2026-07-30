@@ -7,6 +7,7 @@ final class MenuBarController: NSObject {
     private let notificationController = AgentNotificationController()
     private let scanQueue = DispatchQueue(label: "AgentStatusBar.AgentScan", qos: .utility)
     private let creditRefreshQueue = DispatchQueue(label: "AgentStatusBar.CreditRefresh", qos: .utility)
+    private let featurePreferences = MenuBarFeaturePreferences()
     private let home = NSHomeDirectory()
     private let scanInterval: TimeInterval = 5
     private let creditRefreshInterval: TimeInterval = 5 * 60
@@ -88,7 +89,12 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else {
             return
         }
-        let image = StatusBarIconRenderer.render(snapshot: lastSnapshot, credits: lastCredits)
+        let image = StatusBarIconRenderer.render(
+            snapshot: lastSnapshot,
+            credits: lastCredits,
+            showsStatusHalos: featurePreferences.showsStatusHalos,
+            showsUsage: featurePreferences.showsUsage
+        )
         statusItem.length = image.size.width + 10
         button.image = image
         button.toolTip = tooltipText()
@@ -96,38 +102,26 @@ final class MenuBarController: NSObject {
 
     private func rebuildMenu() {
         let menu = NSMenu()
-        let summary = lastSnapshot.summary
-        let claudeClients = sessionSortedClients(lastSnapshot.clients.filter { $0.kind == .claude })
-        let codexClients = sessionSortedClients(lastSnapshot.clients.filter { $0.kind == .codex })
 
-        menu.addItem(disabled("Agent 状态"))
-        menu.addItem(viewItem(AgentGroupRowView(
-            kind: .claude,
-            clients: claudeClients,
-            credit: credit(for: .claude)
-        )))
-        menu.addItem(viewItem(AgentGroupRowView(
-            kind: .codex,
-            clients: codexClients,
-            credit: credit(for: .codex)
-        )))
-        menu.addItem(disabled("白环 空闲 · 绿环 运行中 · 红光 需处理"))
-        menu.addItem(disabled("总数 \(summary.total) · 运行 \(summary.running) · 需处理 \(summary.waitingApproval)"))
-        if summary.unknown > 0 {
-            menu.addItem(disabled("未知 \(summary.unknown)"))
-        }
-        menu.addItem(NSMenuItem.separator())
+        let haloItem = NSMenuItem(
+            title: "显示状态光环",
+            action: #selector(toggleStatusHalos),
+            keyEquivalent: ""
+        )
+        haloItem.target = self
+        haloItem.state = featurePreferences.showsStatusHalos ? .on : .off
+        menu.addItem(haloItem)
 
-        if lastSnapshot.clients.isEmpty {
-            menu.addItem(disabled("没有检测到 Codex / Claude Code 进程"))
-        } else {
-            addSection(title: "需要处理", clients: clients(in: .waitingApproval), emptyText: "无", to: menu)
-            addSection(title: "运行中", clients: clients(in: .running), emptyText: "无", to: menu)
-            addSection(title: "空闲", clients: idleClients(), emptyText: "无", to: menu)
-            addSection(title: "未知", clients: unknownClients(), emptyText: "无", to: menu)
-        }
+        let usageItem = NSMenuItem(
+            title: "显示用量",
+            action: #selector(toggleUsage),
+            keyEquivalent: ""
+        )
+        usageItem.target = self
+        usageItem.state = featurePreferences.showsUsage ? .on : .off
+        menu.addItem(usageItem)
 
-        menu.addItem(NSMenuItem.separator())
+        menu.addItem(.separator())
         let refreshItem = NSMenuItem(title: "刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
@@ -144,93 +138,28 @@ final class MenuBarController: NSObject {
         statusItem.menu = menu
     }
 
-    private func addSection(title: String, clients: [AgentClient], emptyText: String, to menu: NSMenu) {
-        menu.addItem(disabled(title))
-        if clients.isEmpty {
-            menu.addItem(disabled("  \(emptyText)"))
-            return
-        }
-        for client in clients {
-            menu.addItem(viewItem(AgentClientRowView(
-                client: client,
-                title: displayTitle(for: client),
-                subtitle: subtitle(for: client)
-            )))
-        }
-    }
-
-    private func clients(in state: AgentState) -> [AgentClient] {
-        sortedClients(lastSnapshot.clients.filter { $0.state == state })
-    }
-
-    private func idleClients() -> [AgentClient] {
-        sortedClients(lastSnapshot.clients.filter { $0.state == .idle || $0.state == .stale })
-    }
-
-    private func unknownClients() -> [AgentClient] {
-        sortedClients(lastSnapshot.clients.filter { $0.state == .unknown })
-    }
-
-    private func sessionSortedClients(_ clients: [AgentClient]) -> [AgentClient] {
-        clients.sorted {
-            if $0.kind.rawValue != $1.kind.rawValue {
-                return $0.kind.rawValue < $1.kind.rawValue
-            }
-            return $0.pid < $1.pid
-        }
-    }
-
-    private func sortedClients(_ clients: [AgentClient]) -> [AgentClient] {
-        clients.sorted {
-            if $0.state.sortRank != $1.state.sortRank {
-                return $0.state.sortRank < $1.state.sortRank
-            }
-            if $0.kind.rawValue != $1.kind.rawValue {
-                return $0.kind.rawValue < $1.kind.rawValue
-            }
-            return $0.pid < $1.pid
-        }
-    }
-
-    private func displayTitle(for client: AgentClient) -> String {
-        if let title = client.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-            return title
-        }
-        if let cwd = client.cwd, !cwd.isEmpty {
-            return URL(fileURLWithPath: cwd).lastPathComponent
-        }
-        return "\(client.kind.displayName) 会话"
-    }
-
-    private func subtitle(for client: AgentClient) -> String {
-        var parts = [displayStateName(for: client.state)]
-
-        if let waitingSince = client.waitingSince, client.state == .waitingApproval {
-            parts.append("已等 \(durationText(since: waitingSince))")
-        } else if let lastSeenAt = client.lastSeenAt {
-            parts.append("\(durationText(since: lastSeenAt))前")
+    private func tooltipText() -> String {
+        guard featurePreferences.showsStatusHalos || featurePreferences.showsUsage else {
+            return "Agent Status Bar"
         }
 
-        if let cwd = client.cwd, !cwd.isEmpty {
-            let folder = URL(fileURLWithPath: cwd).lastPathComponent
-            if folder != displayTitle(for: client) {
-                parts.append(folder)
-            }
+        let summary = lastSnapshot.summary
+        var parts: [String] = []
+        if featurePreferences.showsStatusHalos {
+            parts.append("Claude \(summary.claude) · Codex \(summary.codex)")
+            parts.append("运行 \(summary.running) · 需处理 \(summary.waitingApproval)")
         }
-
+        if featurePreferences.showsUsage {
+            parts.append("Claude\(tooltipCreditSuffix(for: .claude))")
+            parts.append("Codex\(tooltipCreditSuffix(for: .codex))")
+        }
         return parts.joined(separator: " · ")
     }
 
-    private func displayStateName(for state: AgentState) -> String {
-        state == .stale ? AgentState.idle.displayName : state.displayName
-    }
-
-    private func tooltipText() -> String {
-        let summary = lastSnapshot.summary
-        return "Claude \(summary.claude)\(tooltipCreditSuffix(for: .claude)) · Codex \(summary.codex)\(tooltipCreditSuffix(for: .codex)) · 运行 \(summary.running) · 需处理 \(summary.waitingApproval)"
-    }
-
     private func refreshCreditsIfNeeded(force: Bool = false) {
+        guard featurePreferences.showsUsage else {
+            return
+        }
         let now = Date()
         guard force || now >= nextCreditRefreshAt else {
             return
@@ -263,10 +192,6 @@ final class MenuBarController: NSObject {
         return creditRetryInterval
     }
 
-    private func credit(for kind: AgentKind) -> AgentCreditStatus? {
-        lastCredits.status(for: kind)
-    }
-
     private func tooltipCreditSuffix(for kind: AgentKind) -> String {
         guard let credit = lastCredits.status(for: kind) else {
             return ""
@@ -274,28 +199,20 @@ final class MenuBarController: NSObject {
         return " (\(credit.menuText))"
     }
 
-    private func disabled(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
+    @objc private func toggleStatusHalos() {
+        featurePreferences.showsStatusHalos.toggle()
+        updateStatusIcon()
+        rebuildMenu()
     }
 
-    private func viewItem(_ view: NSView) -> NSMenuItem {
-        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        item.view = view
-        return item
-    }
-
-    private func durationText(since date: Date) -> String {
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
-        if seconds < 60 {
-            return "\(seconds)s"
+    @objc private func toggleUsage() {
+        featurePreferences.showsUsage.toggle()
+        if featurePreferences.showsUsage {
+            nextCreditRefreshAt = .distantPast
+            refreshCreditsIfNeeded(force: true)
         }
-        let minutes = seconds / 60
-        if minutes < 60 {
-            return "\(minutes)m"
-        }
-        return "\(minutes / 60)h"
+        updateStatusIcon()
+        rebuildMenu()
     }
 
     @objc private func copySnapshot() {
