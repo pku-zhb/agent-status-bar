@@ -25,6 +25,8 @@ struct CreditScannerTests {
         try resetProgressKeepsSubPercentPrecisionAndResetsToZero()
         try featurePreferencesDefaultOnAndRemainIndependent()
         try statusHalosAndUsageChangeLayoutIndependently()
+        try compactUsageLabelsKeepExactValuesWithoutUnits()
+        try usageNumbersDoNotExpandTheMenuBarLayout()
         print("CreditScanner tests passed")
     }
 
@@ -189,6 +191,7 @@ struct CreditScannerTests {
         let preferences = MenuBarFeaturePreferences(defaults: defaults)
         try expect(preferences.showsStatusHalos, "Status halos should default on")
         try expect(preferences.showsUsage, "Usage should default on")
+        try expect(preferences.showsUsageNumbers, "Usage numbers should default on")
 
         preferences.showsStatusHalos = false
         let reloaded = MenuBarFeaturePreferences(defaults: defaults)
@@ -198,9 +201,82 @@ struct CreditScannerTests {
         reloaded.showsUsage = false
         try expect(!preferences.showsStatusHalos, "Usage setting changed status halo setting")
         try expect(!preferences.showsUsage, "Usage setting was not persisted")
+        try expect(preferences.showsUsageNumbers, "Usage setting changed usage number setting")
+
+        reloaded.showsUsageNumbers = false
+        try expect(!preferences.showsUsage, "Usage number setting changed usage setting")
+        try expect(!preferences.showsUsageNumbers, "Usage number setting was not persisted")
     }
 
     static func statusHalosAndUsageChangeLayoutIndependently() throws {
+        let fixture = menuBarFixture()
+        let all = StatusBarIconRenderer.render(
+            snapshot: fixture.snapshot,
+            credits: fixture.credits,
+            showsStatusHalos: true,
+            showsUsage: true
+        ).size.width
+        let halosOnly = StatusBarIconRenderer.render(
+            snapshot: fixture.snapshot,
+            credits: fixture.credits,
+            showsStatusHalos: true,
+            showsUsage: false
+        ).size.width
+        let usageOnly = StatusBarIconRenderer.render(
+            snapshot: fixture.snapshot,
+            credits: fixture.credits,
+            showsStatusHalos: false,
+            showsUsage: true
+        ).size.width
+        let iconsOnly = StatusBarIconRenderer.render(
+            snapshot: fixture.snapshot,
+            credits: fixture.credits,
+            showsStatusHalos: false,
+            showsUsage: false
+        ).size.width
+
+        try expect(all > halosOnly, "Usage toggle did not change menu bar layout")
+        try expect(all > usageOnly, "Status halo toggle did not change menu bar layout")
+        try expect(halosOnly > iconsOnly, "Status halos were not independently visible")
+        try expect(usageOnly > iconsOnly, "Usage meters were not independently visible")
+    }
+
+    static func compactUsageLabelsKeepExactValuesWithoutUnits() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try expect(StatusBarIconRenderer.usageMeterLabel(usedPercent: 7) == "7", "Usage label added formatting")
+        try expect(StatusBarIconRenderer.usageMeterLabel(usedPercent: 100) == "100", "Full usage was truncated")
+        try expect(
+            StatusBarIconRenderer.remainingHoursLabel(
+                resetAt: now.addingTimeInterval(30 * 60),
+                now: now
+            ) == "1",
+            "Partial remaining hour should round up"
+        )
+        try expect(
+            StatusBarIconRenderer.remainingHoursLabel(
+                resetAt: now.addingTimeInterval(100 * 60 * 60),
+                now: now
+            ) == "100",
+            "Three-digit remaining hours were truncated"
+        )
+    }
+
+    static func usageNumbersDoNotExpandTheMenuBarLayout() throws {
+        let fixture = menuBarFixture()
+        let withNumbers = StatusBarIconRenderer.render(
+            snapshot: fixture.snapshot,
+            credits: fixture.credits,
+            showsUsageNumbers: true
+        ).size.width
+        let withoutNumbers = StatusBarIconRenderer.render(
+            snapshot: fixture.snapshot,
+            credits: fixture.credits,
+            showsUsageNumbers: false
+        ).size.width
+        try expect(withNumbers == withoutNumbers, "Usage number toggle changed menu bar width")
+    }
+
+    static func menuBarFixture() -> (snapshot: AgentSnapshot, credits: AgentCreditSnapshot) {
         let client = AgentClient(
             id: "claude-1",
             kind: .claude,
@@ -249,36 +325,7 @@ struct CreditScannerTests {
             ]
         )
         let credits = AgentCreditSnapshot(generatedAt: Date(), codex: credit, claude: credit)
-
-        let all = StatusBarIconRenderer.render(
-            snapshot: snapshot,
-            credits: credits,
-            showsStatusHalos: true,
-            showsUsage: true
-        ).size.width
-        let halosOnly = StatusBarIconRenderer.render(
-            snapshot: snapshot,
-            credits: credits,
-            showsStatusHalos: true,
-            showsUsage: false
-        ).size.width
-        let usageOnly = StatusBarIconRenderer.render(
-            snapshot: snapshot,
-            credits: credits,
-            showsStatusHalos: false,
-            showsUsage: true
-        ).size.width
-        let iconsOnly = StatusBarIconRenderer.render(
-            snapshot: snapshot,
-            credits: credits,
-            showsStatusHalos: false,
-            showsUsage: false
-        ).size.width
-
-        try expect(all > halosOnly, "Usage toggle did not change menu bar layout")
-        try expect(all > usageOnly, "Status halo toggle did not change menu bar layout")
-        try expect(halosOnly > iconsOnly, "Status halos were not independently visible")
-        try expect(usageOnly > iconsOnly, "Usage meters were not independently visible")
+        return (snapshot, credits)
     }
 
     static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {

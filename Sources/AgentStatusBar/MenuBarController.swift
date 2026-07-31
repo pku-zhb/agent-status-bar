@@ -96,7 +96,8 @@ final class MenuBarController: NSObject {
             snapshot: lastSnapshot,
             credits: lastCredits,
             showsStatusHalos: featurePreferences.showsStatusHalos,
-            showsUsage: featurePreferences.showsUsage
+            showsUsage: featurePreferences.showsUsage,
+            showsUsageNumbers: featurePreferences.showsUsageNumbers
         )
         statusItem.length = image.size.width + 10
         button.image = image
@@ -123,6 +124,15 @@ final class MenuBarController: NSObject {
         usageItem.target = self
         usageItem.state = featurePreferences.showsUsage ? .on : .off
         menu.addItem(usageItem)
+
+        let usageNumbersItem = NSMenuItem(
+            title: "显示用量数字",
+            action: #selector(toggleUsageNumbers),
+            keyEquivalent: ""
+        )
+        usageNumbersItem.target = self
+        usageNumbersItem.state = featurePreferences.showsUsageNumbers ? .on : .off
+        menu.addItem(usageNumbersItem)
 
         menu.addItem(.separator())
         let refreshItem = NSMenuItem(title: "刷新", action: #selector(refreshNow), keyEquivalent: "r")
@@ -246,6 +256,12 @@ final class MenuBarController: NSObject {
             nextCreditRefreshAt = .distantPast
             refreshCreditsIfNeeded(force: true)
         }
+        updateStatusIcon()
+        rebuildMenu()
+    }
+
+    @objc private func toggleUsageNumbers() {
+        featurePreferences.showsUsageNumbers.toggle()
         updateStatusIcon()
         rebuildMenu()
     }

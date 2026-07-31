@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/AgentStatusBar.app"
 BIN="$ROOT/.build/release/AgentStatusBar"
-APP_VERSION="${APP_VERSION:-0.1.21}"
-BUILD_VERSION="${BUILD_VERSION:-22}"
+APP_VERSION="${APP_VERSION:-0.1.22}"
+BUILD_VERSION="${BUILD_VERSION:-23}"
 
 cd "$ROOT"
 if ! swift build -c release; then

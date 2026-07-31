@@ -238,11 +238,17 @@ enum StatusVisuals {
 }
 
 enum StatusBarIconRenderer {
+    private static let meterBarWidth: CGFloat = 11
+    private static let meterBarGap: CGFloat = 2
+    private static let meterWindowStep: CGFloat = 29
+    private static let meterTrailingPadding: CGFloat = 3
+
     static func render(
         snapshot: AgentSnapshot,
         credits: AgentCreditSnapshot = .empty,
         showsStatusHalos: Bool = true,
-        showsUsage: Bool = true
+        showsUsage: Bool = true,
+        showsUsageNumbers: Bool = true
     ) -> NSImage {
         let claude = sorted(snapshot.clients.filter { $0.kind == .claude })
         let codex = sorted(snapshot.clients.filter { $0.kind == .codex })
@@ -277,6 +283,7 @@ enum StatusBarIconRenderer {
             overflow: claudeOverflow,
             credit: claudeCredit,
             showsStatusHalos: showsStatusHalos,
+            showsUsageNumbers: showsUsageNumbers,
             atX: 0
         )
         drawGroup(
@@ -285,6 +292,7 @@ enum StatusBarIconRenderer {
             overflow: codexOverflow,
             credit: codexCredit,
             showsStatusHalos: showsStatusHalos,
+            showsUsageNumbers: showsUsageNumbers,
             atX: claudeWidth + groupGap
         )
 
@@ -319,6 +327,7 @@ enum StatusBarIconRenderer {
         overflow: Int,
         credit: AgentCreditStatus?,
         showsStatusHalos: Bool,
+        showsUsageNumbers: Bool,
         atX x: CGFloat
     ) {
         let iconRect = CGRect(x: x + 3, y: 3, width: 18, height: 18)
@@ -351,28 +360,95 @@ enum StatusBarIconRenderer {
         }
 
         if let credit {
-            drawMenuBarCreditMeters(credit, atX: creditX)
+            drawMenuBarCreditMeters(
+                credit,
+                atX: creditX,
+                showsNumbers: showsUsageNumbers,
+                now: Date()
+            )
         }
     }
 
-    private static func drawMenuBarCreditMeters(_ credit: AgentCreditStatus, atX x: CGFloat) {
+    private static func drawMenuBarCreditMeters(
+        _ credit: AgentCreditStatus,
+        atX x: CGFloat,
+        showsNumbers: Bool,
+        now: Date
+    ) {
         let barY: CGFloat = 3
-        let barWidth: CGFloat = 7
         let barHeight: CGFloat = 18
-        let windowStep: CGFloat = 24
         for (index, window) in credit.displayWindows.enumerated() {
-            let windowX = x + CGFloat(index) * windowStep
+            let windowX = x + CGFloat(index) * meterWindowStep
+            let usageRect = CGRect(
+                x: windowX,
+                y: barY,
+                width: meterBarWidth,
+                height: barHeight
+            )
+            let resetRect = CGRect(
+                x: windowX + meterBarWidth + meterBarGap,
+                y: barY,
+                width: meterBarWidth,
+                height: barHeight
+            )
             StatusVisuals.drawVerticalUsageBar(
                 usedPercent: window.usedPercent.map(Double.init),
-                in: CGRect(x: windowX, y: barY, width: barWidth, height: barHeight),
+                in: usageRect,
                 fillColor: .white
             )
             StatusVisuals.drawVerticalUsageBar(
-                usedPercent: window.resetElapsedPercent(),
-                in: CGRect(x: windowX + 10, y: barY, width: barWidth, height: barHeight),
+                usedPercent: window.resetElapsedPercent(now: now),
+                in: resetRect,
                 fillColor: .white
             )
+            if showsNumbers {
+                drawCompactMeterLabel(
+                    usageMeterLabel(usedPercent: window.usedPercent),
+                    in: usageRect
+                )
+                drawCompactMeterLabel(
+                    remainingHoursLabel(resetAt: window.resetAt, now: now),
+                    in: resetRect
+                )
+            }
         }
+    }
+
+    static func usageMeterLabel(usedPercent: Int?) -> String? {
+        guard let usedPercent else {
+            return nil
+        }
+        return String(min(100, max(0, usedPercent)))
+    }
+
+    static func remainingHoursLabel(resetAt: Date?, now: Date = Date()) -> String? {
+        guard let resetAt else {
+            return nil
+        }
+        let remainingSeconds = max(0, resetAt.timeIntervalSince(now))
+        return String(Int(ceil(remainingSeconds / (60 * 60))))
+    }
+
+    private static func drawCompactMeterLabel(_ label: String?, in rect: CGRect) {
+        guard let label else {
+            return
+        }
+        let fontSize: CGFloat = label.count <= 2 ? 6.5 : 5.25
+        let text = label as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.white,
+            .strokeColor: NSColor.black.withAlphaComponent(0.92),
+            .strokeWidth: -2.5
+        ]
+        let size = text.size(withAttributes: attributes)
+        text.draw(
+            at: CGPoint(
+                x: rect.midX - size.width / 2,
+                y: rect.midY - size.height / 2 - 0.5
+            ),
+            withAttributes: attributes
+        )
     }
 
     private static func menuBarCreditWidth(_ credit: AgentCreditStatus) -> CGFloat {
@@ -380,7 +456,10 @@ enum StatusBarIconRenderer {
         guard count > 0 else {
             return 0
         }
-        return 7 + CGFloat(count - 1) * 24 + 17
+        let meterPairWidth = meterBarWidth * 2 + meterBarGap
+        return meterPairWidth
+            + CGFloat(count - 1) * meterWindowStep
+            + meterTrailingPadding
     }
 
     private static func textWidth(_ text: String, attributes: [NSAttributedString.Key: Any]) -> CGFloat {

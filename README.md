@@ -35,10 +35,11 @@ back to idle during quiet model/tool gaps. Notifications use the same final
 client state as the menu bar lights; completion log events do not bypass the
 running / idle state machine.
 
-The drop-down menu contains controls only. "显示状态光环" and "显示用量" are
-independent, persistent switches. Turning usage off also pauses background usage
-requests; turning it back on refreshes immediately. Use "复制 JSON 快照" when
-debugging is needed.
+The drop-down menu contains controls only. "显示状态光环", "显示用量", and
+"显示用量数字" are independent, persistent switches. Usage meters show the
+used percentage and remaining reset hours as compact unitless numbers. Turning
+usage off also pauses background usage requests; turning it back on refreshes
+immediately. Use "复制 JSON 快照" when debugging is needed.
 
 ## Run
 
