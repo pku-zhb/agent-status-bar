@@ -190,18 +190,45 @@ struct AgentCreditStatus: Codable {
         return displayWindows.compactMap { window in
             var details: [String] = []
             if let usedPercent = window.usedPercent {
-                details.append("已用 \(min(100, max(0, usedPercent)))%")
+                details.append("\(min(100, max(0, usedPercent)))%")
             }
             if let resetAt = window.resetAt {
                 let remainingSeconds = max(0, resetAt.timeIntervalSince(now))
                 let remainingHours = Int(ceil(remainingSeconds / (60 * 60)))
-                details.append("\(remainingHours) 小时后重置")
+                details.append(displayDuration(hours: remainingHours))
             }
             guard !details.isEmpty else {
                 return nil
             }
-            return "\(window.label)  \(details.joined(separator: " · "))"
+            return "\(displayWindowName(window))  \(details.joined(separator: " · "))"
         }
+    }
+
+    private func displayWindowName(_ window: AgentCreditWindow) -> String {
+        let id = window.id.lowercased()
+        let label = window.label.lowercased()
+        if id.contains("fable") || label == "fable" || label == "f" {
+            return "Fable"
+        }
+        if id.contains("five-hour") || label == "5h" {
+            return "5H"
+        }
+        if id.contains("weekly") || label == "weekly" || label == "w" {
+            return "Weekly"
+        }
+        return window.label
+    }
+
+    private func displayDuration(hours: Int) -> String {
+        let days = hours / 24
+        let remainingHours = hours % 24
+        if days > 0, remainingHours > 0 {
+            return "\(days) 天 \(remainingHours) 小时"
+        }
+        if days > 0 {
+            return "\(days) 天"
+        }
+        return "\(remainingHours) 小时"
     }
 
     private func displayUsed(_ value: Int?) -> String {

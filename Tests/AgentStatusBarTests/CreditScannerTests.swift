@@ -258,15 +258,23 @@ struct CreditScannerTests {
                     usedPercent: 31,
                     resetAt: now.addingTimeInterval(100 * 60 * 60),
                     windowSeconds: 7 * 24 * 60 * 60
+                ),
+                AgentCreditWindow(
+                    id: "weekly-fable",
+                    label: "F",
+                    usedPercent: 59,
+                    resetAt: now.addingTimeInterval(48 * 60 * 60),
+                    windowSeconds: 7 * 24 * 60 * 60
                 )
             ]
         )
         try expect(
             credit.menuUsageLines(now: now) == [
-                "5h  已用 100% · 1 小时后重置",
-                "W  已用 31% · 100 小时后重置"
+                "5H  100% · 1 小时",
+                "Weekly  31% · 4 天 4 小时",
+                "Fable  59% · 2 天"
             ],
-            "Usage menu details did not preserve percent and reset hours"
+            "Usage menu details did not simplify names and reset durations"
         )
     }
 
