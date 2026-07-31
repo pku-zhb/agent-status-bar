@@ -402,11 +402,11 @@ enum StatusBarIconRenderer {
                 fillColor: .white
             )
             if showsNumbers {
-                drawCompactMeterLabel(
+                drawVerticalMeterLabel(
                     usageMeterLabel(usedPercent: window.usedPercent),
                     in: usageRect
                 )
-                drawCompactMeterLabel(
+                drawVerticalMeterLabel(
                     remainingHoursLabel(resetAt: window.resetAt, now: now),
                     in: resetRect
                 )
@@ -429,26 +429,43 @@ enum StatusBarIconRenderer {
         return String(Int(ceil(remainingSeconds / (60 * 60))))
     }
 
-    private static func drawCompactMeterLabel(_ label: String?, in rect: CGRect) {
+    private static func drawVerticalMeterLabel(_ label: String?, in rect: CGRect) {
         guard let label else {
             return
         }
-        let fontSize: CGFloat = label.count <= 2 ? 6.5 : 5.25
-        let text = label as NSString
+        let digits = label.map(String.init)
+        let fontSize: CGFloat
+        let verticalStep: CGFloat
+        switch digits.count {
+        case 1:
+            fontSize = 8.5
+            verticalStep = 0
+        case 2:
+            fontSize = 8
+            verticalStep = 7.5
+        default:
+            fontSize = 5.75
+            verticalStep = 5.5
+        }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold),
-            .foregroundColor: NSColor.white,
-            .strokeColor: NSColor.black.withAlphaComponent(0.92),
-            .strokeWidth: -2.5
+            .foregroundColor: NSColor(calibratedWhite: 0.04, alpha: 1),
+            .strokeColor: NSColor.white.withAlphaComponent(0.96),
+            .strokeWidth: -2
         ]
-        let size = text.size(withAttributes: attributes)
-        text.draw(
-            at: CGPoint(
-                x: rect.midX - size.width / 2,
-                y: rect.midY - size.height / 2 - 0.5
-            ),
-            withAttributes: attributes
-        )
+        let firstCenterY = rect.midY + CGFloat(digits.count - 1) * verticalStep / 2
+        for (index, digit) in digits.enumerated() {
+            let text = digit as NSString
+            let size = text.size(withAttributes: attributes)
+            let centerY = firstCenterY - CGFloat(index) * verticalStep
+            text.draw(
+                at: CGPoint(
+                    x: rect.midX - size.width / 2,
+                    y: centerY - size.height / 2 - 0.5
+                ),
+                withAttributes: attributes
+            )
+        }
     }
 
     private static func menuBarCreditWidth(_ credit: AgentCreditStatus) -> CGFloat {
