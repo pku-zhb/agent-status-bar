@@ -98,13 +98,6 @@ struct AgentCreditSnapshot: Codable {
         }
     }
 
-    func replacingMissingValues(with previous: AgentCreditSnapshot) -> AgentCreditSnapshot {
-        AgentCreditSnapshot(
-            generatedAt: generatedAt,
-            codex: codex?.hasDisplayableUsage == true ? codex : previous.codex,
-            claude: claude?.hasDisplayableUsage == true ? claude : previous.claude
-        )
-    }
 }
 
 struct AgentCreditWindow: Codable, Equatable {

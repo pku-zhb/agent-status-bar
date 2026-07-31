@@ -77,10 +77,12 @@ state files only:
   title, and busy / idle / waiting state. If the session file is missing or
   stale, the app falls back to process-child activity.
 - Claude Code usage windows are refreshed automatically from Anthropic's usage
-  endpoint using Claude Code's existing OAuth credential in Keychain. If that
-  request fails, the app falls back to Claude Code's fresh
-  `~/.claude.json` `cachedUsageUtilization` cache. Credentials are never stored
-  or printed by the app.
+  endpoint. Current Claude Desktop versions inject a temporary OAuth credential
+  into their Claude Code processes, so the app reads only that credential and
+  subscription type from a running process and keeps them in memory. Legacy
+  Keychain credentials remain a fallback, followed by a local
+  `~/.claude.json` `cachedUsageUtilization` cache no older than 15 minutes.
+  Credentials are never stored or printed by the app.
 - Codex usage from the local Codex app-server `account/rateLimits/read` API.
   Windows are classified by `windowDurationMins`, so weekly-only responses are
   not mislabeled as five-hour usage.

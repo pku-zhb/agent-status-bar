@@ -18,6 +18,8 @@ struct CreditScannerTests {
         try claudeCacheReadsSessionWeeklyAndFableWindows()
         try claudeCacheRejectsStaleUsage()
         try claudeLiveUsageUsesTheSameWindowModel()
+        try claudeDesktopCredentialsAreParsedWithoutOtherEnvironmentValues()
+        try claudeDesktopProcessesAreIdentifiedByExecutablePath()
         try codexWeeklyOnlyPrimaryIsClassifiedAsWeekly()
         try codexLegacyDualWindowsUseDurationMetadata()
         try resetProgressKeepsSubPercentPrecisionAndResetsToZero()
@@ -69,7 +71,7 @@ struct CreditScannerTests {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let data = try JSONSerialization.data(withJSONObject: [
             "cachedUsageUtilization": [
-                "fetchedAtMs": now.addingTimeInterval(-25 * 60 * 60).timeIntervalSince1970 * 1_000,
+                "fetchedAtMs": now.addingTimeInterval(-16 * 60).timeIntervalSince1970 * 1_000,
                 "utilization": ["limits": [["kind": "session", "percent": 10]]]
             ]
         ])
@@ -102,6 +104,31 @@ struct CreditScannerTests {
         }
         try expect(status.source == "claude-api", "Unexpected live Claude source")
         try expect(status.windows.map(\.usedPercent) == [4, 21, 39], "Unexpected live Claude usage values")
+    }
+
+    static func claudeDesktopCredentialsAreParsedWithoutOtherEnvironmentValues() throws {
+        let fields = CreditScanner.claudeProcessOAuthFields(from: """
+        CLAUDE_CODE_SUBSCRIPTION_TYPE=max
+        CLAUDE_CODE_OAUTH_TOKEN=test-oauth-token
+        UNRELATED_SECRET=must-not-be-read
+        """)
+
+        try expect(fields?.accessToken == "test-oauth-token", "Claude process OAuth token was not parsed")
+        try expect(fields?.subscriptionType == "max", "Claude subscription type was not parsed")
+    }
+
+    static func claudeDesktopProcessesAreIdentifiedByExecutablePath() throws {
+        let processList = """
+          120 /usr/local/bin/claude
+          240 /Applications/Claude.app/Contents/MacOS/Claude
+          360 /Users/test/Library/Application Support/Claude/claude-code/2.1.219/claude.app/Contents/MacOS/claude
+          480 /Users/test/other/claude.app/Contents/MacOS/claude
+        """
+
+        try expect(
+            CreditScanner.claudeDesktopProcessIDs(from: processList) == [480, 360],
+            "Claude Desktop process paths were not identified"
+        )
     }
 
     static func codexWeeklyOnlyPrimaryIsClassifiedAsWeekly() throws {

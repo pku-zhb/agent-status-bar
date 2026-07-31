@@ -3,7 +3,7 @@ import Foundation
 final class CreditScanner {
     private static let fiveHours: TimeInterval = 5 * 60 * 60
     private static let sevenDays: TimeInterval = 7 * 24 * 60 * 60
-    private static let claudeCacheMaxAge: TimeInterval = 24 * 60 * 60
+    private static let claudeCacheMaxAge: TimeInterval = 15 * 60
 
     private let home: String
     private let fileManager = FileManager.default
@@ -355,6 +355,10 @@ final class CreditScanner {
     }
 
     private func claudeCredentials() -> ClaudeOAuthCredentials? {
+        if let processCredentials = readRunningClaudeCredentials() {
+            return processCredentials
+        }
+
         if let keychainCredentials = readClaudeKeychainCredentials() {
             if isClaudeSubscription(keychainCredentials.subscriptionType) {
                 return keychainCredentials
@@ -370,6 +374,89 @@ final class CreditScanner {
         }
 
         return readClaudeFileCredentials()
+    }
+
+    private func readRunningClaudeCredentials() -> ClaudeOAuthCredentials? {
+        guard let processList = ProcessRunner.run(
+            "/bin/ps",
+            ["-axo", "pid=,comm="],
+            timeout: 3
+        ), processList.exitCode == 0 else {
+            return nil
+        }
+
+        for pid in Self.claudeDesktopProcessIDs(from: processList.stdout) {
+            let script = #"""
+            /bin/ps eww -p "$1" -o command= \
+              | /usr/bin/tr ' ' '\n' \
+              | /usr/bin/awk -F= '
+                  $1 == "CLAUDE_CODE_OAUTH_TOKEN" ||
+                  $1 == "CLAUDE_CODE_SUBSCRIPTION_TYPE" {
+                      print
+                  }
+                '
+            """#
+            guard let result = ProcessRunner.run(
+                "/bin/zsh",
+                ["-c", script, "agent-status-bar", String(pid)],
+                timeout: 3
+            ), result.exitCode == 0,
+               let fields = Self.claudeProcessOAuthFields(from: result.stdout) else {
+                continue
+            }
+
+            return ClaudeOAuthCredentials(
+                accessToken: fields.accessToken,
+                subscriptionType: fields.subscriptionType ?? "subscription",
+                expiresAt: nil
+            )
+        }
+        return nil
+    }
+
+    static func claudeDesktopProcessIDs(from processList: String) -> [Int] {
+        processList
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { line -> Int? in
+                let fields = line.split(
+                    maxSplits: 1,
+                    omittingEmptySubsequences: true,
+                    whereSeparator: { $0.isWhitespace }
+                )
+                guard fields.count == 2,
+                      fields[1].hasSuffix("/claude.app/Contents/MacOS/claude") else {
+                    return nil
+                }
+                return Int(fields[0])
+            }
+            .sorted(by: >)
+    }
+
+    static func claudeProcessOAuthFields(
+        from output: String
+    ) -> (accessToken: String, subscriptionType: String?)? {
+        var values: [String: String] = [:]
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let pair = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2,
+                  pair[0] == "CLAUDE_CODE_OAUTH_TOKEN"
+                    || pair[0] == "CLAUDE_CODE_SUBSCRIPTION_TYPE" else {
+                continue
+            }
+            values[String(pair[0])] = String(pair[1])
+        }
+
+        guard let accessToken = values["CLAUDE_CODE_OAUTH_TOKEN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !accessToken.isEmpty else {
+            return nil
+        }
+        let subscriptionType = values["CLAUDE_CODE_SUBSCRIPTION_TYPE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (
+            accessToken,
+            subscriptionType?.isEmpty == false ? subscriptionType : nil
+        )
     }
 
     private func readClaudeKeychainCredentials() -> ClaudeOAuthCredentials? {
