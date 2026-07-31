@@ -183,6 +183,27 @@ struct AgentCreditStatus: Codable {
             || weeklyResetAt != nil
     }
 
+    func menuUsageLines(now: Date = Date()) -> [String] {
+        if unlimited {
+            return ["不限量"]
+        }
+        return displayWindows.compactMap { window in
+            var details: [String] = []
+            if let usedPercent = window.usedPercent {
+                details.append("已用 \(min(100, max(0, usedPercent)))%")
+            }
+            if let resetAt = window.resetAt {
+                let remainingSeconds = max(0, resetAt.timeIntervalSince(now))
+                let remainingHours = Int(ceil(remainingSeconds / (60 * 60)))
+                details.append("\(remainingHours) 小时后重置")
+            }
+            guard !details.isEmpty else {
+                return nil
+            }
+            return "\(window.label)  \(details.joined(separator: " · "))"
+        }
+    }
+
     private func displayUsed(_ value: Int?) -> String {
         value.map { "\($0)% used" } ?? "n/a"
     }

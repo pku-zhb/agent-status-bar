@@ -96,8 +96,7 @@ final class MenuBarController: NSObject {
             snapshot: lastSnapshot,
             credits: lastCredits,
             showsStatusHalos: featurePreferences.showsStatusHalos,
-            showsUsage: featurePreferences.showsUsage,
-            showsUsageNumbers: featurePreferences.showsUsageNumbers
+            showsUsage: featurePreferences.showsUsage
         )
         statusItem.length = image.size.width + 10
         button.image = image
@@ -106,6 +105,11 @@ final class MenuBarController: NSObject {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+
+        if featurePreferences.showsUsage {
+            addUsageDetails(to: menu)
+            menu.addItem(.separator())
+        }
 
         let haloItem = NSMenuItem(
             title: "显示状态光环",
@@ -125,15 +129,6 @@ final class MenuBarController: NSObject {
         usageItem.state = featurePreferences.showsUsage ? .on : .off
         menu.addItem(usageItem)
 
-        let usageNumbersItem = NSMenuItem(
-            title: "显示用量数字",
-            action: #selector(toggleUsageNumbers),
-            keyEquivalent: ""
-        )
-        usageNumbersItem.target = self
-        usageNumbersItem.state = featurePreferences.showsUsageNumbers ? .on : .off
-        menu.addItem(usageNumbersItem)
-
         menu.addItem(.separator())
         let refreshItem = NSMenuItem(title: "刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
@@ -149,6 +144,64 @@ final class MenuBarController: NSObject {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+    }
+
+    private func addUsageDetails(to menu: NSMenu) {
+        var addedProvider = false
+        for kind in [AgentKind.claude, .codex] {
+            guard let credit = lastCredits.status(for: kind), credit.hasDisplayableUsage else {
+                continue
+            }
+            if addedProvider {
+                menu.addItem(usageInfoItem(title: "", height: 5))
+            }
+            menu.addItem(
+                usageInfoItem(
+                    title: kind == .claude ? "Claude Code" : "Codex",
+                    font: .boldSystemFont(ofSize: 13)
+                )
+            )
+            for line in credit.menuUsageLines() {
+                menu.addItem(usageInfoItem(title: line, leftInset: 28))
+            }
+            addedProvider = true
+        }
+
+        if !addedProvider {
+            menu.addItem(usageInfoItem(title: "正在获取用量…"))
+        }
+    }
+
+    private func usageInfoItem(
+        title: String,
+        font: NSFont = .systemFont(ofSize: 13),
+        leftInset: CGFloat = 14,
+        height: CGFloat = 22
+    ) -> NSMenuItem {
+        let item = NSMenuItem()
+        item.title = title
+
+        let label = NSTextField(labelWithString: title)
+        label.font = font
+        label.textColor = .labelColor
+        label.lineBreakMode = .byClipping
+        label.sizeToFit()
+
+        let view = NSView(
+            frame: NSRect(
+                x: 0,
+                y: 0,
+                width: leftInset + label.frame.width + 16,
+                height: height
+            )
+        )
+        label.frame.origin = NSPoint(
+            x: leftInset,
+            y: floor((height - label.frame.height) / 2)
+        )
+        view.addSubview(label)
+        item.view = view
+        return item
     }
 
     private func tooltipText() -> String {
@@ -256,12 +309,6 @@ final class MenuBarController: NSObject {
             nextCreditRefreshAt = .distantPast
             refreshCreditsIfNeeded(force: true)
         }
-        updateStatusIcon()
-        rebuildMenu()
-    }
-
-    @objc private func toggleUsageNumbers() {
-        featurePreferences.showsUsageNumbers.toggle()
         updateStatusIcon()
         rebuildMenu()
     }
