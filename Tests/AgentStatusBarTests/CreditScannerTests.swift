@@ -16,10 +16,12 @@ private enum TestFailure: Error, CustomStringConvertible {
 struct CreditScannerTests {
     static func main() throws {
         try claudeCacheReadsSessionWeeklyAndFableWindows()
+        try claudeCacheAcceptsUsageWithinTermyWindow()
         try claudeCacheRejectsStaleUsage()
         try claudeLiveUsageUsesTheSameWindowModel()
         try claudeDesktopCredentialsAreParsedWithoutOtherEnvironmentValues()
         try claudeDesktopProcessesAreIdentifiedByExecutablePath()
+        try claudeCredentialsRemainInMemoryUntilRejected()
         try codexWeeklyOnlyPrimaryIsClassifiedAsWeekly()
         try codexLegacyDualWindowsUseDurationMetadata()
         try resetProgressKeepsSubPercentPrecisionAndResetsToZero()
@@ -27,6 +29,7 @@ struct CreditScannerTests {
         try statusHalosAndUsageChangeLayoutIndependently()
         try usageMetersUseTheOriginalCompactWidth()
         try usageMenuLinesShowPercentAndResetHours()
+        try usageStatusSurvivesRefreshMissUntilReset()
         print("CreditScanner tests passed")
     }
 
@@ -73,7 +76,7 @@ struct CreditScannerTests {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let data = try JSONSerialization.data(withJSONObject: [
             "cachedUsageUtilization": [
-                "fetchedAtMs": now.addingTimeInterval(-16 * 60).timeIntervalSince1970 * 1_000,
+                "fetchedAtMs": now.addingTimeInterval(-25 * 60 * 60).timeIntervalSince1970 * 1_000,
                 "utilization": ["limits": [["kind": "session", "percent": 10]]]
             ]
         ])
@@ -81,6 +84,21 @@ struct CreditScannerTests {
         try expect(
             CreditScanner.claudeCreditStatus(fromConfigData: data, now: now) == nil,
             "Expected stale Claude cache to be rejected"
+        )
+    }
+
+    static func claudeCacheAcceptsUsageWithinTermyWindow() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let data = try JSONSerialization.data(withJSONObject: [
+            "cachedUsageUtilization": [
+                "fetchedAtMs": now.addingTimeInterval(-18 * 60 * 60).timeIntervalSince1970 * 1_000,
+                "utilization": ["limits": [["kind": "session", "percent": 10]]]
+            ]
+        ])
+
+        try expect(
+            CreditScanner.claudeCreditStatus(fromConfigData: data, now: now) != nil,
+            "Expected Claude cache inside the 24-hour Termy window"
         )
     }
 
@@ -131,6 +149,28 @@ struct CreditScannerTests {
             CreditScanner.claudeDesktopProcessIDs(from: processList) == [480, 360],
             "Claude Desktop process paths were not identified"
         )
+    }
+
+    static func claudeCredentialsRemainInMemoryUntilRejected() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = ClaudeOAuthCredentials(
+            accessToken: "first-token",
+            subscriptionType: "max",
+            expiresAt: nil
+        )
+        let second = ClaudeOAuthCredentials(
+            accessToken: "second-token",
+            subscriptionType: "max",
+            expiresAt: now.addingTimeInterval(60 * 60).timeIntervalSince1970 * 1_000
+        )
+        var cache = ClaudeCredentialCache()
+
+        try expect(cache.remember(first, now: now) == first, "Claude credential was not remembered")
+        try expect(cache.current(now: now) == first, "Remembered Claude credential disappeared")
+        cache.reject(first)
+        try expect(cache.current(now: now) == nil, "Rejected Claude credential remained active")
+        try expect(cache.remember(first, now: now) == nil, "Rejected Claude token was accepted again")
+        try expect(cache.remember(second, now: now) == second, "Rotated Claude token was not accepted")
     }
 
     static func codexWeeklyOnlyPrimaryIsClassifiedAsWeekly() throws {
@@ -287,6 +327,31 @@ struct CreditScannerTests {
             showsUsage: true
         ).size.width
         try expect(usageOnly == 106, "Usage meters did not return to their original compact width")
+    }
+
+    static func usageStatusSurvivesRefreshMissUntilReset() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let active = AgentCreditStatus(
+            fiveHourRemainingPercent: 50,
+            weeklyRemainingPercent: nil,
+            fiveHourResetAt: now.addingTimeInterval(60),
+            weeklyResetAt: nil,
+            unlimited: false,
+            source: "test",
+            windows: []
+        )
+        let expired = AgentCreditStatus(
+            fiveHourRemainingPercent: 50,
+            weeklyRemainingPercent: nil,
+            fiveHourResetAt: now,
+            weeklyResetAt: nil,
+            unlimited: false,
+            source: "test",
+            windows: []
+        )
+
+        try expect(active.shouldRetainAfterRefreshMiss(now: now), "Active usage disappeared before reset")
+        try expect(!expired.shouldRetainAfterRefreshMiss(now: now), "Expired usage remained after reset")
     }
 
     static func menuBarFixture() -> (snapshot: AgentSnapshot, credits: AgentCreditSnapshot) {

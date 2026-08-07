@@ -7,12 +7,12 @@ final class MenuBarController: NSObject {
     private let notificationController = AgentNotificationController()
     private let scanQueue = DispatchQueue(label: "AgentStatusBar.AgentScan", qos: .utility)
     private let creditRefreshQueue = DispatchQueue(label: "AgentStatusBar.CreditRefresh", qos: .utility)
+    private let creditScanner = CreditScanner()
     private let featurePreferences = MenuBarFeaturePreferences()
     private let home = NSHomeDirectory()
     private let scanInterval: TimeInterval = 5
     private let creditRefreshInterval: TimeInterval = 5 * 60
     private let creditRetryInterval: TimeInterval = 60
-    private let maximumConsecutiveCreditMisses = 2
     private var scanTimer: Timer?
     private var lastSnapshot = AgentSnapshot.empty
     private var lastCredits = AgentCreditSnapshot.empty
@@ -20,8 +20,6 @@ final class MenuBarController: NSObject {
     private var forceCreditRefreshAfterScan = false
     private var creditRefreshInFlight = false
     private var nextCreditRefreshAt = Date.distantPast
-    private var claudeCreditMisses = 0
-    private var codexCreditMisses = 0
     private var hasScannedAgents = false
 
     override init() {
@@ -235,9 +233,9 @@ final class MenuBarController: NSObject {
         }
 
         creditRefreshInFlight = true
-        let home = home
-        creditRefreshQueue.async { [weak self, home] in
-            let credits = CreditScanner(home: home).scan()
+        let creditScanner = creditScanner
+        creditRefreshQueue.async { [weak self, creditScanner] in
+            let credits = creditScanner.scan()
             DispatchQueue.main.async { [weak self] in
                 guard let self else {
                     return
@@ -261,13 +259,11 @@ final class MenuBarController: NSObject {
     private func mergeCredits(_ credits: AgentCreditSnapshot) -> AgentCreditSnapshot {
         let claude = resolvedCredit(
             credits.claude,
-            previous: lastCredits.claude,
-            misses: &claudeCreditMisses
+            previous: lastCredits.claude
         )
         let codex = resolvedCredit(
             credits.codex,
-            previous: lastCredits.codex,
-            misses: &codexCreditMisses
+            previous: lastCredits.codex
         )
         return AgentCreditSnapshot(
             generatedAt: credits.generatedAt,
@@ -278,16 +274,15 @@ final class MenuBarController: NSObject {
 
     private func resolvedCredit(
         _ current: AgentCreditStatus?,
-        previous: AgentCreditStatus?,
-        misses: inout Int
+        previous: AgentCreditStatus?
     ) -> AgentCreditStatus? {
         if current?.hasDisplayableUsage == true {
-            misses = 0
             return current
         }
-
-        misses += 1
-        return misses <= maximumConsecutiveCreditMisses ? previous : nil
+        guard let previous, previous.shouldRetainAfterRefreshMiss() else {
+            return nil
+        }
+        return previous
     }
 
     private func tooltipCreditSuffix(for kind: AgentKind) -> String {

@@ -1,12 +1,13 @@
 import Foundation
 
-final class CreditScanner {
+final class CreditScanner: @unchecked Sendable {
     private static let fiveHours: TimeInterval = 5 * 60 * 60
     private static let sevenDays: TimeInterval = 7 * 24 * 60 * 60
-    private static let claudeCacheMaxAge: TimeInterval = 15 * 60
+    private static let claudeCacheMaxAge: TimeInterval = 24 * 60 * 60
 
     private let home: String
     private let fileManager = FileManager.default
+    private var claudeCredentialCache = ClaudeCredentialCache()
 
     init(home: String = NSHomeDirectory()) {
         self.home = home
@@ -21,12 +22,21 @@ final class CreditScanner {
     }
 
     private func claudeCreditStatus() -> AgentCreditStatus? {
-        if let liveUtilization = refreshClaudeUsage(),
-           let liveStatus = Self.claudeCreditStatus(
-               fromUtilization: liveUtilization,
-               source: "claude-api"
-           ) {
-            return liveStatus
+        if let credentials = claudeCredentials(),
+           isClaudeSubscription(credentials.subscriptionType) {
+            switch refreshClaudeUsage(with: credentials) {
+            case .success(let liveUtilization):
+                if let liveStatus = Self.claudeCreditStatus(
+                    fromUtilization: liveUtilization,
+                    source: "claude-api"
+                ) {
+                    return liveStatus
+                }
+            case .rejected:
+                claudeCredentialCache.reject(credentials)
+            case .unavailable:
+                break
+            }
         }
 
         guard let data = fileManager.contents(atPath: claudeConfigJSONPath()) else {
@@ -35,12 +45,12 @@ final class CreditScanner {
         return Self.claudeCreditStatus(fromConfigData: data)
     }
 
-    private func refreshClaudeUsage() -> [String: Any]? {
-        guard let credentials = claudeCredentials(),
-              let accessToken = credentials.accessToken,
-              isClaudeSubscription(credentials.subscriptionType),
+    private func refreshClaudeUsage(
+        with credentials: ClaudeOAuthCredentials
+    ) -> ClaudeUsageRefreshResult {
+        guard let accessToken = credentials.accessToken,
               let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
-            return nil
+            return .unavailable
         }
 
         var request = URLRequest(url: url)
@@ -54,8 +64,8 @@ final class CreditScanner {
         let resultBox = ClaudeUsageResultBox()
         let task = URLSession.shared.dataTask(with: request) { data, response, _ in
             defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode == 200,
+            resultBox.statusCode = (response as? HTTPURLResponse)?.statusCode
+            guard resultBox.statusCode == 200,
                   let data,
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return
@@ -66,9 +76,15 @@ final class CreditScanner {
 
         if semaphore.wait(timeout: .now() + 16) == .timedOut {
             task.cancel()
-            return nil
+            return .unavailable
         }
-        return resultBox.utilization
+        if let utilization = resultBox.utilization {
+            return .success(utilization)
+        }
+        if resultBox.statusCode == 401 || resultBox.statusCode == 403 {
+            return .rejected
+        }
+        return .unavailable
     }
 
     private func claudeConfigJSONPath() -> String {
@@ -355,25 +371,34 @@ final class CreditScanner {
     }
 
     private func claudeCredentials() -> ClaudeOAuthCredentials? {
-        if let processCredentials = readRunningClaudeCredentials() {
-            return processCredentials
+        if let processCredentials = readRunningClaudeCredentials(),
+           let remembered = claudeCredentialCache.remember(processCredentials) {
+            return remembered
         }
 
         if let keychainCredentials = readClaudeKeychainCredentials() {
             if isClaudeSubscription(keychainCredentials.subscriptionType) {
-                return keychainCredentials
+                if let remembered = claudeCredentialCache.remember(keychainCredentials) {
+                    return remembered
+                }
             }
             if let subscriptionType = readClaudeFileSubscriptionType() {
-                return ClaudeOAuthCredentials(
+                let enriched = ClaudeOAuthCredentials(
                     accessToken: keychainCredentials.accessToken,
                     subscriptionType: subscriptionType,
                     expiresAt: keychainCredentials.expiresAt
                 )
+                if let remembered = claudeCredentialCache.remember(enriched) {
+                    return remembered
+                }
             }
-            return keychainCredentials
         }
 
-        return readClaudeFileCredentials()
+        if let fileCredentials = readClaudeFileCredentials(),
+           let remembered = claudeCredentialCache.remember(fileCredentials) {
+            return remembered
+        }
+        return claudeCredentialCache.current()
     }
 
     private func readRunningClaudeCredentials() -> ClaudeOAuthCredentials? {
@@ -606,14 +631,67 @@ final class CreditScanner {
 
 private final class ClaudeUsageResultBox: @unchecked Sendable {
     var utilization: [String: Any]?
+    var statusCode: Int?
+}
+
+private enum ClaudeUsageRefreshResult {
+    case success([String: Any])
+    case rejected
+    case unavailable
 }
 
 private struct ClaudeCredentialsFile: Decodable {
     let claudeAiOauth: ClaudeOAuthCredentials?
 }
 
-private struct ClaudeOAuthCredentials: Decodable {
+struct ClaudeOAuthCredentials: Decodable, Equatable {
     let accessToken: String?
     let subscriptionType: String?
     let expiresAt: Double?
+}
+
+struct ClaudeCredentialCache {
+    private var retained: ClaudeOAuthCredentials?
+    private var rejectedAccessToken: String?
+
+    mutating func remember(
+        _ credentials: ClaudeOAuthCredentials,
+        now: Date = Date()
+    ) -> ClaudeOAuthCredentials? {
+        guard isValid(credentials, now: now),
+              let accessToken = credentials.accessToken,
+              accessToken != rejectedAccessToken else {
+            return nil
+        }
+        if rejectedAccessToken != nil {
+            rejectedAccessToken = nil
+        }
+        retained = credentials
+        return credentials
+    }
+
+    mutating func current(now: Date = Date()) -> ClaudeOAuthCredentials? {
+        guard let retained, isValid(retained, now: now),
+              retained.accessToken != rejectedAccessToken else {
+            return nil
+        }
+        return retained
+    }
+
+    mutating func reject(_ credentials: ClaudeOAuthCredentials) {
+        rejectedAccessToken = credentials.accessToken
+        if retained?.accessToken == credentials.accessToken {
+            retained = nil
+        }
+    }
+
+    private func isValid(_ credentials: ClaudeOAuthCredentials, now: Date) -> Bool {
+        guard let accessToken = credentials.accessToken, !accessToken.isEmpty else {
+            return false
+        }
+        guard let expiresAt = credentials.expiresAt else {
+            return true
+        }
+        return expiresAt > now.timeIntervalSince1970 * 1_000
+    }
 }

@@ -183,6 +183,16 @@ struct AgentCreditStatus: Codable {
             || weeklyResetAt != nil
     }
 
+    func shouldRetainAfterRefreshMiss(now: Date = Date()) -> Bool {
+        if unlimited {
+            return true
+        }
+        guard let latestResetAt = displayWindows.compactMap(\.resetAt).max() else {
+            return false
+        }
+        return latestResetAt > now
+    }
+
     func menuUsageLines(now: Date = Date()) -> [String] {
         if unlimited {
             return ["不限量"]
